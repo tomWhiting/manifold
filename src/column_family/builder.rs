@@ -7,7 +7,7 @@ use crate::DatabaseError;
 ///
 /// Set to 64 to enable WAL (Write-Ahead Log) by default for optimal performance.
 /// WAL provides 82% throughput improvement and group commit batching.
-/// Set pool_size to 0 to explicitly disable WAL.
+/// Set `pool_size` to 0 to explicitly disable WAL.
 const DEFAULT_POOL_SIZE: usize = 64;
 
 /// Builder for configuring and opening a column family database.
@@ -38,7 +38,7 @@ impl ColumnFamilyDatabaseBuilder {
     /// The pool manages file descriptors for column families. A larger pool allows
     /// more column families to have active writes concurrently without eviction.
     ///
-    /// **Write-Ahead Log (WAL):** When pool_size > 0, WAL is enabled for improved
+    /// **Write-Ahead Log (WAL):** When `pool_size` > 0, WAL is enabled for improved
     /// write performance through group commit batching. Benchmarks show 82% throughput
     /// improvement with WAL enabled.
     ///

@@ -14,7 +14,7 @@ pub(crate) struct WALEntry {
     /// Name of the column family this transaction belongs to.
     pub(crate) cf_name: String,
 
-    /// Transaction ID from the underlying redb TransactionalMemory.
+    /// Transaction ID from the underlying redb `TransactionalMemory`.
     pub(crate) transaction_id: u64,
 
     /// The serialized transaction payload.
@@ -25,11 +25,11 @@ pub(crate) struct WALEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WALTransactionPayload {
     /// Root of the user data B-tree after this transaction.
-    /// Stored as (PageNumber, Checksum, length) to fully reconstruct BtreeHeader.
+    /// Stored as (`PageNumber`, Checksum, length) to fully reconstruct `BtreeHeader`.
     pub(crate) user_root: Option<(PageNumber, Checksum, u64)>,
 
     /// Root of the system B-tree after this transaction.
-    /// Stored as (PageNumber, Checksum, length) to fully reconstruct BtreeHeader.
+    /// Stored as (`PageNumber`, Checksum, length) to fully reconstruct `BtreeHeader`.
     pub(crate) system_root: Option<(PageNumber, Checksum, u64)>,
 
     /// Pages freed by this transaction.
@@ -63,10 +63,10 @@ impl WALEntry {
     ///
     /// Format:
     /// - sequence: u64 (8 bytes)
-    /// - cf_name_len: u32 (4 bytes)
-    /// - cf_name: [u8; cf_name_len] (variable)
-    /// - transaction_id: u64 (8 bytes)
-    /// - payload: serialized WALTransactionPayload (variable)
+    /// - `cf_name_len`: u32 (4 bytes)
+    /// - `cf_name`: [u8; `cf_name_len`] (variable)
+    /// - `transaction_id`: u64 (8 bytes)
+    /// - payload: serialized `WALTransactionPayload` (variable)
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
 
@@ -75,6 +75,7 @@ impl WALEntry {
 
         // CF name (length-prefixed string)
         let cf_name_bytes = self.cf_name.as_bytes();
+        #[allow(clippy::cast_possible_truncation)]
         buf.extend_from_slice(&(cf_name_bytes.len() as u32).to_le_bytes());
         buf.extend_from_slice(cf_name_bytes);
 
@@ -122,7 +123,7 @@ impl WALEntry {
         }
         let cf_name =
             String::from_utf8(data[offset..offset + cf_name_len].to_vec()).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("invalid UTF-8: {}", e))
+                io::Error::new(io::ErrorKind::InvalidData, format!("invalid UTF-8: {e}"))
             })?;
         offset += cf_name_len;
 
@@ -156,14 +157,14 @@ impl WALTransactionPayload {
     /// Serializes the payload into the given buffer.
     ///
     /// Format:
-    /// - user_root_present: u8 (1 = present, 0 = None)
-    /// - user_root: PageNumber (8 bytes) + Checksum (16 bytes) + length (8 bytes) if present
-    /// - system_root_present: u8
-    /// - system_root: PageNumber + Checksum + length if present
-    /// - freed_pages_count: u32 (4 bytes)
-    /// - freed_pages: [PageNumber; count] (8 bytes each)
-    /// - allocated_pages_count: u32 (4 bytes)
-    /// - allocated_pages: [PageNumber; count] (8 bytes each)
+    /// - `user_root_present`: u8 (1 = present, 0 = None)
+    /// - `user_root`: `PageNumber` (8 bytes) + Checksum (16 bytes) + length (8 bytes) if present
+    /// - `system_root_present`: u8
+    /// - `system_root`: `PageNumber` + Checksum + length if present
+    /// - `freed_pages_count`: u32 (4 bytes)
+    /// - `freed_pages`: [`PageNumber`; count] (8 bytes each)
+    /// - `allocated_pages_count`: u32 (4 bytes)
+    /// - `allocated_pages`: [`PageNumber`; count] (8 bytes each)
     /// - durability: u8 (1 byte)
     fn serialize_into(&self, buf: &mut Vec<u8>) {
         // User root
@@ -187,12 +188,14 @@ impl WALTransactionPayload {
         }
 
         // Freed pages
+        #[allow(clippy::cast_possible_truncation)]
         buf.extend_from_slice(&(self.freed_pages.len() as u32).to_le_bytes());
         for page_num in &self.freed_pages {
             buf.extend_from_slice(&page_num.to_le_bytes());
         }
 
         // Allocated pages
+        #[allow(clippy::cast_possible_truncation)]
         buf.extend_from_slice(&(self.allocated_pages.len() as u32).to_le_bytes());
         for page_num in &self.allocated_pages {
             buf.extend_from_slice(&page_num.to_le_bytes());
@@ -327,7 +330,7 @@ impl WALTransactionPayload {
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("invalid durability value: {}", other),
+                    format!("invalid durability value: {other}"),
                 ));
             }
         };

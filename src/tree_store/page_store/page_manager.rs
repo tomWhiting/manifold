@@ -721,7 +721,7 @@ impl TransactionalMemory {
         self.storage.write_barrier()?;
         let barrier_time = barrier_start.elapsed();
         if barrier_time.as_millis() > 5 {
-            eprintln!("[PERF] write_barrier took: {:?}", barrier_time);
+            eprintln!("[PERF] write_barrier took: {barrier_time:?}");
         }
 
         // CRITICAL OPTIMIZATION: Minimize lock hold time by using lock-free header snapshot
@@ -746,8 +746,7 @@ impl TransactionalMemory {
         let total_commit_time = commit_start.elapsed();
         if total_commit_time.as_millis() > 10 {
             eprintln!(
-                "[PERF] non_durable_commit total: {:?} (barrier: {:?}, header_lock: {:?})",
-                total_commit_time, barrier_time, header_lock_time
+                "[PERF] non_durable_commit total: {total_commit_time:?} (barrier: {barrier_time:?}, header_lock: {header_lock_time:?})"
             );
         }
 
@@ -757,7 +756,7 @@ impl TransactionalMemory {
     /// Applies a WAL transaction directly to the database state.
     ///
     /// This is used during WAL recovery and checkpointing to restore transaction state
-    /// without going through the full WriteTransaction path.
+    /// without going through the full `WriteTransaction` path.
     ///
     /// # Safety
     ///
@@ -1036,7 +1035,7 @@ impl TransactionalMemory {
         let mut state = self.state.lock().unwrap();
         let lock_wait = lock_start.elapsed();
         if lock_wait.as_millis() > 1 {
-            eprintln!("[PERF] allocate_helper lock wait: {:?}", lock_wait);
+            eprintln!("[PERF] allocate_helper lock wait: {lock_wait:?}");
         }
 
         let page_number = if let Some(page_number) =

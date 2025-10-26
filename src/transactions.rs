@@ -1463,10 +1463,10 @@ impl WriteTransaction {
             InternalDurability::Immediate => {
                 if self.wal_journal.is_some() {
                     // WAL already fsynced, just make changes visible
-                    self.non_durable_commit(user_root)?
+                    self.non_durable_commit(user_root)?;
                 } else {
                     // No WAL, use traditional durable commit
-                    self.durable_commit(user_root)?
+                    self.durable_commit(user_root)?;
                 }
             }
         }

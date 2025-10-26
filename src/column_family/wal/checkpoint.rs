@@ -12,9 +12,9 @@ use std::time::Duration;
 
 /// Manages background checkpointing of WAL entries to the main database.
 ///
-/// The CheckpointManager runs a background thread that periodically:
+/// The `CheckpointManager` runs a background thread that periodically:
 /// 1. Reads pending WAL entries
-/// 2. Applies them to the main database using apply_wal_transaction()
+/// 2. Applies them to the main database using `apply_wal_transaction()`
 /// 3. Fsyncs the database
 /// 4. Truncates the WAL file
 ///
@@ -93,7 +93,7 @@ impl CheckpointManager {
         if let Some(handle) = self.checkpoint_thread.take() {
             handle
                 .join()
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "checkpoint thread panicked"))?;
+                .map_err(|_| io::Error::other("checkpoint thread panicked"))?;
         }
 
         Ok(())
@@ -181,28 +181,26 @@ impl CheckpointManager {
         // Fsync all column families to persist changes
         // This ensures the main database is durable before we truncate the WAL
         for cf_name in database.list_column_families() {
-            if let Ok(cf) = database.column_family(&cf_name) {
-                if let Ok(db) = cf.ensure_database() {
+            if let Ok(cf) = database.column_family(&cf_name)
+                && let Ok(db) = cf.ensure_database() {
                     // Sync the database to persist checkpoint changes
                     // We access the underlying storage through a write transaction
                     // that we immediately commit with durability
                     let mut txn = db.begin_write().map_err(|e| {
-                        io::Error::new(io::ErrorKind::Other, format!("begin write failed: {e}"))
+                        io::Error::other(format!("begin write failed: {e}"))
                     })?;
 
                     txn.set_durability(crate::Durability::Immediate)
                         .map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::Other,
+                            io::Error::other(
                                 format!("set durability failed: {e}"),
                             )
                         })?;
 
                     txn.commit().map_err(|e| {
-                        io::Error::new(io::ErrorKind::Other, format!("commit failed: {e}"))
+                        io::Error::other(format!("commit failed: {e}"))
                     })?;
                 }
-            }
         }
 
         // Truncate WAL and reset sequence counter
@@ -229,8 +227,7 @@ impl CheckpointManager {
 
         // Get the underlying Database instance
         let db = cf.ensure_database().map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
+            io::Error::other(
                 format!("failed to access database: {e}"),
             )
         })?;
@@ -264,8 +261,7 @@ impl CheckpointManager {
             crate::transaction_tracker::TransactionId::new(entry.transaction_id),
         )
         .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
+            io::Error::other(
                 format!("apply_wal_transaction failed: {e}"),
             )
         })?;

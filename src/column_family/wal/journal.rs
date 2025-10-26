@@ -122,6 +122,7 @@ impl WALJournal {
     /// Opens an existing WAL file or creates a new one.
     pub(crate) fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
+        #[allow(clippy::suspicious_open_options)]
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -170,6 +171,7 @@ impl WALJournal {
         // Build wire format: length (4) + data (variable) + crc (4)
         let total_len = 4 + entry_data.len() + 4;
         let mut wire_data = Vec::with_capacity(total_len);
+        #[allow(clippy::cast_possible_truncation)]
         wire_data.extend_from_slice(&(total_len as u32).to_le_bytes());
         wire_data.extend_from_slice(&entry_data);
         wire_data.extend_from_slice(&crc.to_le_bytes());
@@ -245,6 +247,7 @@ impl WALJournal {
     fn perform_group_sync(&self) -> io::Result<()> {
         // Optional batching window: spin briefly to collect more transactions
         // This increases batching under load while keeping latency low
+        #[allow(clippy::absurd_extreme_comparisons)]
         if GROUP_COMMIT_WINDOW_MICROS > 0 {
             let batch_start = Instant::now();
             while batch_start.elapsed() < Duration::from_micros(GROUP_COMMIT_WINDOW_MICROS) {
@@ -288,7 +291,7 @@ impl WALJournal {
         Ok(())
     }
 
-    /// Reads all entries with sequence numbers >= start_seq.
+    /// Reads all entries with sequence numbers >= `start_seq`.
     pub(crate) fn read_from(&self, start_seq: u64) -> io::Result<Vec<WALEntry>> {
         let mut file = self.file.lock().unwrap();
 
@@ -302,7 +305,7 @@ impl WALJournal {
         loop {
             let mut len_buf = [0u8; 4];
             match file.read_exact(&mut len_buf) {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e),
             }
@@ -390,13 +393,13 @@ impl WALJournal {
         self.sync()
     }
 
-    /// Updates the header's latest_seq field.
+    /// Updates the header's `latest_seq` field.
     ///
-    /// This is intentionally not called during append() for performance reasons.
+    /// This is intentionally not called during `append()` for performance reasons.
     /// Header updates happen only during checkpoint/truncate operations.
     /// Kept for potential future use in checkpoint optimizations.
     #[allow(dead_code)]
-    fn update_header_latest_seq(&self, file: &mut File, latest_seq: u64) -> io::Result<()> {
+    fn update_header_latest_seq(file: &mut File, latest_seq: u64) -> io::Result<()> {
         file.seek(SeekFrom::Start(0))?;
         let mut header_buf = [0u8; WAL_HEADER_SIZE];
         file.read_exact(&mut header_buf)?;

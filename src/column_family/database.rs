@@ -159,7 +159,7 @@ impl ColumnFamilyDatabase {
     /// Returns a builder for configuring and opening a column family database.
     ///
     /// Most users should use `ColumnFamilyDatabase::open()` which provides
-    /// excellent defaults (WAL enabled with pool_size=64).
+    /// excellent defaults (WAL enabled with `pool_size=64`).
     ///
     /// # Example
     ///
@@ -184,7 +184,7 @@ impl ColumnFamilyDatabase {
     /// Opens or creates a column family database at the specified path with optimal defaults.
     ///
     /// **This is the recommended way to open a database.** Default settings provide:
-    /// - WAL enabled (pool_size=64) for excellent performance (451K ops/sec at 8 threads)
+    /// - WAL enabled (`pool_size=64`) for excellent performance (451K ops/sec at 8 threads)
     /// - Group commit batching for high concurrent write throughput
     /// - Auto-creating column families on first access via `column_family_or_create()`
     ///
@@ -336,30 +336,26 @@ impl ColumnFamilyDatabase {
 
                 // Sync all column families to persist recovery
                 for cf_name in temp_db.list_column_families() {
-                    if let Ok(cf) = temp_db.column_family(&cf_name) {
-                        if let Ok(cf_db) = cf.ensure_database() {
+                    if let Ok(cf) = temp_db.column_family(&cf_name)
+                        && let Ok(cf_db) = cf.ensure_database() {
                             // Commit an empty transaction with durability to fsync
                             let mut txn = cf_db.begin_write().map_err(|e| {
-                                DatabaseError::Storage(StorageError::from(io::Error::new(
-                                    io::ErrorKind::Other,
+                                DatabaseError::Storage(StorageError::from(io::Error::other(
                                     format!("recovery fsync begin_write failed: {e}"),
                                 )))
                             })?;
                             txn.set_durability(crate::Durability::Immediate)
                                 .map_err(|e| {
-                                    DatabaseError::Storage(StorageError::from(io::Error::new(
-                                        io::ErrorKind::Other,
+                                    DatabaseError::Storage(StorageError::from(io::Error::other(
                                         format!("recovery set_durability failed: {e}"),
                                     )))
                                 })?;
                             txn.commit().map_err(|e| {
-                                DatabaseError::Storage(StorageError::from(io::Error::new(
-                                    io::ErrorKind::Other,
+                                DatabaseError::Storage(StorageError::from(io::Error::other(
                                     format!("recovery commit failed: {e}"),
                                 )))
                             })?;
                         }
-                    }
                 }
 
                 // Truncate WAL after successful recovery
@@ -462,13 +458,13 @@ impl ColumnFamilyDatabase {
             let current_file_size = self
                 .header_backend
                 .len()
-                .map_err(|e| ColumnFamilyError::Io(e))?;
+                .map_err(ColumnFamilyError::Io)?;
 
             if new_file_size > current_file_size {
                 // Extend file to reserve space for this partition
                 self.header_backend
                     .set_len(new_file_size)
-                    .map_err(|e| ColumnFamilyError::Io(e))?;
+                    .map_err(ColumnFamilyError::Io)?;
 
                 // Important: Don't sync here - let the OS handle it lazily
                 // This keeps create_column_family() fast
