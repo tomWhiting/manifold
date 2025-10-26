@@ -720,6 +720,104 @@ Update estimated times if they prove significantly inaccurate to help calibrate 
   - Document trade-offs vs Durability::None pattern
   - **Dev Notes:**
 
+### Phase 5.6g: Pipelined Leader-Based Group Commit (In Progress) 🚀
+
+**Status:** In Progress
+
+**Objective:** Implement the platinum-standard group commit pattern used by production databases (PostgreSQL, InnoDB) to achieve maximum WAL throughput (30-50K+ ops/sec).
+
+**Problem Statement:** Current background-thread group commit has fixed 2ms latency (limiting to ~500 ops/sec single-threaded) and doesn't overlap I/O with accumulation. Performance tests show ~145 ops/sec sequential, ~2000 ops/sec with 16 concurrent threads.
+
+**Solution:** Pipelined leader-based group commit where:
+1. First transaction becomes the "leader" and performs fsync for all pending transactions
+2. While one batch is fsyncing (I/O-bound), the next batch accumulates (CPU-bound)
+3. Double-buffering enables continuous operation without idle time
+4. Adaptive to load: single transaction gets immediate fsync, high load gets automatic batching
+
+**Expected Performance:**
+- Single-threaded: 200-300 ops/sec (limited by fsync hardware ~3-5ms)
+- Multi-threaded: 30-50K+ ops/sec (20-200 transactions batched per fsync)
+- Latency: <1ms average under load (vs 2ms fixed currently)
+
+**Implementation Steps:**
+
+- [x] Fix compilation error (Mutex<File> clone issue)
+  - Changed `file: Mutex<File>` to `file: Arc<Mutex<File>>`
+  - Updated clone to use `Arc::clone(&self.file)`
+  - **Dev Notes:** Fixed in journal.rs. Build now succeeds with 3 warnings (unused fields).
+
+- [x] Fix transaction integration to use wait_for_sync()
+  - Replaced `wal_journal.sync()` with `wal_journal.wait_for_sync(sequence)`
+  - Enables group commit instead of immediate fsync per transaction
+  - **Dev Notes:** Updated commit_inner() in transactions.rs. Transactions now wait for background thread to batch fsync.
+
+- [x] Remove header update bottleneck from append()
+  - Removed `update_header_latest_seq()` call from append path
+  - Header only updated during checkpoint/truncate operations
+  - Allows concurrent appends without serialization on header updates
+  - **Dev Notes:** Performance improved from ~145 to ~2000 ops/sec with 16 threads. Concurrent test validates group commit working across different column families.
+
+- [ ] Design pipelined architecture
+  - Design double-buffer/multi-stage pipeline
+  - Define state machine for batch transitions
+  - Plan leader election mechanism (AtomicBool or similar)
+  - Design batching window logic (spin for 100-500μs to collect)
+  - **Dev Notes:**
+
+- [ ] Implement leader election
+  - Add AtomicBool for "sync_in_progress" flag
+  - First transaction sets flag and becomes leader
+  - Other transactions see flag and wait as followers
+  - Leader clears flag when done and wakes followers
+  - **Dev Notes:**
+
+- [ ] Implement double-buffering
+  - Create Buffer A and Buffer B for pipelining
+  - While fsync(A), accumulate into B
+  - Swap buffers after each fsync completes
+  - Handle edge cases (empty buffers, concurrent swaps)
+  - **Dev Notes:**
+
+- [ ] Implement batching window
+  - Leader spins for brief period (100-500μs) after becoming leader
+  - Collect additional transactions that arrive during window
+  - Balance throughput (longer window = more batching) vs latency
+  - Make configurable for tuning
+  - **Dev Notes:**
+
+- [ ] Remove background sync thread
+  - Eliminate timer-based background thread (not needed with leader pattern)
+  - Transactions do sync work themselves
+  - Simplifies shutdown and reduces overhead
+  - **Dev Notes:**
+
+- [ ] Update wait mechanism
+  - Change from condvar wait on background thread to wait on leader
+  - Followers wait on leader's completion
+  - Leader notifies all on fsync complete
+  - **Dev Notes:**
+
+- [ ] Add adaptive optimization
+  - Detect load patterns (single vs concurrent)
+  - Tune batching window based on observed throughput
+  - Consider separate fast-path for single transaction case
+  - **Dev Notes:**
+
+- [ ] Test and benchmark
+  - Test single-threaded performance (~200-300 ops/sec)
+  - Test multi-threaded scaling (target 30-50K ops/sec)
+  - Test crash recovery still works
+  - Measure latency distribution (P50, P95, P99)
+  - Compare to background thread approach
+  - **Dev Notes:**
+
+- [ ] Update smoke tests and concurrent tests
+  - Update expected performance numbers in test output
+  - Add pipelined-specific test cases
+  - Document performance characteristics
+  - **Dev Notes:**
+  - **Dev Notes:**
+
 **Files Created:**
 - `src/column_family/wal/mod.rs` (module organization)
 - `src/column_family/wal/entry.rs` (WALEntry types with zero-cost serialization, includes BtreeHeader length field)
@@ -766,7 +864,7 @@ Update estimated times if they prove significantly inaccurate to help calibrate 
 WAL system is now **fully functional and production-ready**:
 
 - **Core WAL (5.6a):** Binary format with CRC32 checksums, zero-cost serialization, all journal operations implemented
-- **Transaction Integration (5.6b):** Transactions append to WAL before commit, fast append-only fsync (~0.5ms vs ~5ms full B-tree sync)
+- **Transaction Integration (5.6b):** Transactions append to WAL before commit, using wait_for_sync() for group commit coordination
 - **Checkpoint System (5.6c):** Background thread with hybrid triggers (60s/64MB), applies WAL to main DB, truncates journal, graceful shutdown
 - **Crash Recovery (5.6d):** Automatic WAL replay on database open, applies all pending transactions, truncates after recovery
 

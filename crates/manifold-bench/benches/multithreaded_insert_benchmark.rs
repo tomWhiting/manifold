@@ -2,9 +2,9 @@ use std::env::current_dir;
 use std::{fs, process, thread};
 use tempfile::NamedTempFile;
 
+use manifold::{Database, ReadableDatabase, ReadableTableMetadata, TableDefinition};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use manifold::{Database, ReadableDatabase, ReadableTableMetadata, TableDefinition};
 use std::time::Instant;
 
 const ELEMENTS: u64 = 1_000_000;

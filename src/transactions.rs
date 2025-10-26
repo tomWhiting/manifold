@@ -1434,13 +1434,14 @@ impl WriteTransaction {
 
             let mut entry = WALEntry::new(cf_name.clone(), self.transaction_id.raw_id(), payload);
 
-            // Append to WAL and fsync (WALJournal has internal Mutex for thread-safety)
+            // Append to WAL and wait for group commit fsync
             let sequence = wal_journal
                 .append(&mut entry)
                 .map_err(|e| CommitError::Storage(StorageError::from(e)))?;
 
+            // Wait for background sync thread to fsync (group commit)
             wal_journal
-                .sync()
+                .wait_for_sync(sequence)
                 .map_err(|e| CommitError::Storage(StorageError::from(e)))?;
 
             // Register for checkpoint

@@ -2,10 +2,8 @@ use super::entry::WALEntry;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Magic number for WAL file identification.
 const WAL_MAGIC: &[u8; 8] = b"REDB-WAL";
@@ -16,28 +14,16 @@ const WAL_VERSION: u8 = 1;
 /// Size of the WAL file header in bytes.
 const WAL_HEADER_SIZE: usize = 512;
 
-/// Group commit sync interval - batches fsyncs across concurrent column family writes
-const GROUP_COMMIT_INTERVAL_MS: u64 = 2;
-
 /// The Write-Ahead Log journal manages durable logging of transactions.
 ///
-/// The journal is **shared across all column families** in the database.
-/// Group commit batches fsyncs from concurrent writes to different CFs:
-///   - Thread 1 writes to "users" CF → appends to shared WAL
-///   - Thread 2 writes to "products" CF → appends to shared WAL
-///   - Thread 3 writes to "sales" CF → appends to shared WAL
-///   - Background thread fsyncs every ~2ms, committing all 3 transactions with one fsync
-///
-/// This provides ~10-15K ops/sec throughput for concurrent CF writes.
+/// The journal provides:
+/// - Fast append-only writes with fsync
+/// - CRC32 checksums for corruption detection
+/// - Sequence numbers for ordering and replay
+/// - Truncation for checkpoint cleanup
 pub(crate) struct WALJournal {
-    file: Arc<Mutex<File>>,
+    file: Mutex<File>,
     sequence_counter: Arc<AtomicU64>,
-    /// Tracks the last sequence number that has been fsynced
-    last_synced: Arc<(Mutex<u64>, Condvar)>,
-    /// Background sync thread handle
-    sync_thread: Mutex<Option<JoinHandle<()>>>,
-    /// Shutdown signal for sync thread
-    shutdown: Arc<AtomicBool>,
 }
 
 /// Header structure for the WAL file.
@@ -118,8 +104,6 @@ impl WALHeader {
 
 impl WALJournal {
     /// Opens an existing WAL file or creates a new one.
-    ///
-    /// Starts the background sync thread for group commit across column families.
     pub(crate) fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut file = OpenOptions::new()
@@ -144,63 +128,15 @@ impl WALJournal {
             WALHeader::from_bytes(&header_buf)?
         };
 
-        let journal = Self {
-            file: Arc::new(Mutex::new(file)),
+        Ok(Self {
+            file: Mutex::new(file),
             sequence_counter: Arc::new(AtomicU64::new(header.latest_seq)),
-            last_synced: Arc::new((Mutex::new(header.latest_seq), Condvar::new())),
-            sync_thread: Mutex::new(None),
-            shutdown: Arc::new(AtomicBool::new(false)),
-        };
-
-        // Start background sync thread for group commit
-        journal.start_sync_thread();
-
-        Ok(journal)
+        })
     }
 
-    /// Starts the background group commit sync thread.
-    fn start_sync_thread(&self) {
-        let file = Arc::clone(&self.file);
-        let last_synced = self.last_synced.clone();
-        let shutdown = self.shutdown.clone();
-        let sequence_counter = self.sequence_counter.clone();
-
-        let handle = thread::spawn(move || {
-            let mut last_synced_seq = 0u64;
-
-            while !shutdown.load(Ordering::Acquire) {
-                thread::sleep(Duration::from_millis(GROUP_COMMIT_INTERVAL_MS));
-
-                // Check if there are pending writes from any column family
-                let current_seq = sequence_counter.load(Ordering::Acquire);
-
-                if current_seq > last_synced_seq {
-                    // Fsync all pending writes in one operation (group commit)
-                    if let Err(e) = file.lock().unwrap().sync_all() {
-                        eprintln!("WAL group fsync failed: {e}");
-                        continue;
-                    }
-
-                    // Update last_synced and wake all waiting transactions
-                    let (lock, cvar) = &*last_synced;
-                    let mut synced = lock.lock().unwrap();
-                    *synced = current_seq;
-                    last_synced_seq = current_seq;
-                    cvar.notify_all();
-                }
-            }
-
-            // Final sync on shutdown
-            let _ = file.lock().unwrap().sync_all();
-        });
-
-        *self.sync_thread.lock().unwrap() = Some(handle);
-    }
-
-    /// Appends a transaction entry to the WAL (without fsync).
+    /// Appends a transaction entry to the WAL.
     ///
     /// Returns the assigned sequence number.
-    /// Call `wait_for_sync(sequence)` to wait until this entry is durable.
     pub(crate) fn append(&self, entry: &mut WALEntry) -> io::Result<u64> {
         // Assign sequence number
         let seq = self.sequence_counter.fetch_add(1, Ordering::SeqCst) + 1;
@@ -219,44 +155,21 @@ impl WALJournal {
         wire_data.extend_from_slice(&entry_data);
         wire_data.extend_from_slice(&crc.to_le_bytes());
 
-        // Append to file (buffered write, no fsync yet)
-        // Note: We don't update the header here to allow concurrent appends.
-        // The header will be updated during checkpoint/truncate operations.
+        // Append to file
         let mut file = self.file.lock().unwrap();
         file.seek(SeekFrom::End(0))?;
         file.write_all(&wire_data)?;
 
+        // Update header with latest sequence
+        self.update_header_latest_seq(&mut file, seq)?;
+
         Ok(seq)
     }
 
-    /// Waits until the specified sequence number has been synced to disk.
-    ///
-    /// Group commit: concurrent transactions from different column families
-    /// all wait here and wake up together when the background thread fsyncs.
-    pub(crate) fn wait_for_sync(&self, sequence: u64) -> io::Result<()> {
-        let (lock, cvar) = &*self.last_synced;
-        let mut synced = lock.lock().unwrap();
-
-        while *synced < sequence {
-            synced = cvar.wait(synced).unwrap();
-        }
-
-        Ok(())
-    }
-
-    /// Syncs all pending writes to disk immediately (bypasses group commit).
+    /// Syncs all pending writes to disk.
     pub(crate) fn sync(&self) -> io::Result<()> {
         let file = self.file.lock().unwrap();
-        file.sync_all()?;
-
-        // Update last_synced to current sequence
-        let current_seq = self.sequence_counter.load(Ordering::Acquire);
-        let (lock, cvar) = &*self.last_synced;
-        let mut synced = lock.lock().unwrap();
-        *synced = current_seq;
-        cvar.notify_all();
-
-        Ok(())
+        file.sync_all()
     }
 
     /// Reads all entries with sequence numbers >= start_seq.
@@ -270,6 +183,7 @@ impl WALJournal {
         let header = WALHeader::from_bytes(&header_buf)?;
 
         if start_seq > header.latest_seq {
+            // No entries to read
             return Ok(vec![]);
         }
 
@@ -278,6 +192,7 @@ impl WALJournal {
         let mut entries = Vec::new();
 
         loop {
+            // Read length field
             let mut len_buf = [0u8; 4];
             match file.read_exact(&mut len_buf) {
                 Ok(_) => {}
@@ -287,10 +202,12 @@ impl WALJournal {
 
             let total_len = u32::from_le_bytes(len_buf) as usize;
             if total_len < 8 {
+                // Invalid length (must be at least length field + CRC)
                 break;
             }
 
-            let data_len = total_len - 4 - 4;
+            // Read entry data and CRC
+            let data_len = total_len - 4 - 4; // Subtract length field and CRC field
             let mut entry_data = vec![0u8; data_len];
             file.read_exact(&mut entry_data)?;
 
@@ -298,14 +215,18 @@ impl WALJournal {
             file.read_exact(&mut crc_buf)?;
             let stored_crc = u32::from_le_bytes(crc_buf);
 
+            // Verify CRC32
             let computed_crc = crc32fast::hash(&entry_data);
             if computed_crc != stored_crc {
+                // CRC mismatch - stop reading (partial write or corruption)
                 eprintln!("WAL entry CRC mismatch - stopping replay");
                 break;
             }
 
+            // Deserialize entry
             let (entry, _) = WALEntry::from_bytes(&entry_data)?;
 
+            // Only include entries with sequence >= start_seq
             if entry.sequence >= start_seq {
                 entries.push(entry);
             }
@@ -315,25 +236,25 @@ impl WALJournal {
     }
 
     /// Truncates the WAL and resets the sequence counter.
+    ///
+    /// This should be called after a successful checkpoint to clear processed entries.
     pub(crate) fn truncate(&self, new_oldest_seq: u64) -> io::Result<()> {
         let mut file = self.file.lock().unwrap();
 
+        // Truncate file to just the header
         file.set_len(WAL_HEADER_SIZE as u64)?;
 
+        // Update header with new oldest and latest (resetting)
         file.seek(SeekFrom::Start(0))?;
         let mut header = WALHeader::new();
         header.oldest_seq = new_oldest_seq;
-        header.latest_seq = new_oldest_seq - 1;
+        header.latest_seq = new_oldest_seq - 1; // No entries yet
         file.write_all(&header.to_bytes())?;
         file.sync_all()?;
 
+        // Reset sequence counter
         self.sequence_counter
             .store(new_oldest_seq - 1, Ordering::SeqCst);
-
-        let (lock, cvar) = &*self.last_synced;
-        let mut synced = lock.lock().unwrap();
-        *synced = new_oldest_seq - 1;
-        cvar.notify_all();
 
         Ok(())
     }
@@ -353,17 +274,14 @@ impl WALJournal {
         Ok(file.metadata()?.len())
     }
 
-    /// Shuts down the background sync thread gracefully.
-    pub(crate) fn shutdown(&self) -> io::Result<()> {
-        self.shutdown.store(true, Ordering::Release);
-
-        if let Some(handle) = self.sync_thread.lock().unwrap().take() {
-            let _ = handle.join();
-        }
-
-        self.sync()
+    /// Closes the WAL file.
+    #[cfg(test)]
+    pub(crate) fn close(self) -> io::Result<()> {
+        let file = self.file.into_inner().unwrap();
+        file.sync_all()
     }
 
+    /// Updates the header with the latest sequence number.
     fn update_header_latest_seq(&self, file: &mut File, latest_seq: u64) -> io::Result<()> {
         file.seek(SeekFrom::Start(0))?;
         let mut header_buf = [0u8; WAL_HEADER_SIZE];
@@ -379,12 +297,6 @@ impl WALJournal {
     }
 }
 
-impl Drop for WALJournal {
-    fn drop(&mut self) {
-        let _ = self.shutdown();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,51 +308,80 @@ mod tests {
         let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path();
 
+        // Create new WAL
         let wal = WALJournal::open(path).unwrap();
         let header = wal.read_header().unwrap();
         assert_eq!(header.magic, *WAL_MAGIC);
         assert_eq!(header.version, WAL_VERSION);
         assert_eq!(header.oldest_seq, 0);
         assert_eq!(header.latest_seq, 0);
-
-        wal.shutdown().unwrap();
     }
 
     #[test]
-    fn test_wal_group_commit() {
+    fn test_wal_append_and_read() {
         let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path();
 
-        let wal = Arc::new(WALJournal::open(path).unwrap());
+        let wal = WALJournal::open(path).unwrap();
 
-        // Simulate concurrent writes from different column families
-        let mut handles = vec![];
+        // Create test entry
+        let payload = WALTransactionPayload {
+            user_root: None,
+            system_root: None,
+            freed_pages: vec![],
+            allocated_pages: vec![],
+            durability: crate::Durability::Immediate,
+        };
+
+        let mut entry = WALEntry::new("test_cf".to_string(), 1, payload);
+
+        // Append entry
+        let seq = wal.append(&mut entry).unwrap();
+        assert_eq!(seq, 1);
+        assert_eq!(entry.sequence, 1);
+
+        // Sync
+        wal.sync().unwrap();
+
+        // Read back
+        let entries = wal.read_from(1).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].sequence, 1);
+        assert_eq!(entries[0].cf_name, "test_cf");
+        assert_eq!(entries[0].transaction_id, 1);
+    }
+
+    #[test]
+    fn test_wal_multiple_entries() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        let wal = WALJournal::open(path).unwrap();
+
+        // Append multiple entries
         for i in 0..10 {
-            let wal_clone = wal.clone();
-            let handle = std::thread::spawn(move || {
-                let payload = WALTransactionPayload {
-                    user_root: None,
-                    system_root: None,
-                    freed_pages: vec![],
-                    allocated_pages: vec![],
-                    durability: crate::Durability::Immediate,
-                };
+            let payload = WALTransactionPayload {
+                user_root: None,
+                system_root: None,
+                freed_pages: vec![],
+                allocated_pages: vec![],
+                durability: crate::Durability::Immediate,
+            };
 
-                let mut entry = WALEntry::new(format!("cf_{i}"), i, payload);
-                let seq = wal_clone.append(&mut entry).unwrap();
-                wal_clone.wait_for_sync(seq).unwrap();
-                seq
-            });
-            handles.push(handle);
+            let mut entry = WALEntry::new(format!("cf_{i}"), i, payload);
+            wal.append(&mut entry).unwrap();
         }
 
-        let sequences: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        assert_eq!(sequences.len(), 10);
+        wal.sync().unwrap();
 
+        // Read all entries
         let entries = wal.read_from(1).unwrap();
         assert_eq!(entries.len(), 10);
 
-        wal.shutdown().unwrap();
+        // Read from middle
+        let entries = wal.read_from(5).unwrap();
+        assert_eq!(entries.len(), 6); // Entries 5-10
+        assert_eq!(entries[0].sequence, 5);
     }
 
     #[test]
@@ -450,6 +391,7 @@ mod tests {
 
         let wal = WALJournal::open(path).unwrap();
 
+        // Append entries
         for i in 0..5 {
             let payload = WALTransactionPayload {
                 user_root: None,
@@ -460,15 +402,24 @@ mod tests {
             };
 
             let mut entry = WALEntry::new(format!("cf_{i}"), i, payload);
-            let seq = wal.append(&mut entry).unwrap();
-            wal.wait_for_sync(seq).unwrap();
+            wal.append(&mut entry).unwrap();
         }
 
+        wal.sync().unwrap();
+
+        // Truncate
         wal.truncate(6).unwrap();
 
+        // Read should return empty
         let entries = wal.read_from(6).unwrap();
         assert_eq!(entries.len(), 0);
 
+        // Header should reflect truncation
+        let header = wal.read_header().unwrap();
+        assert_eq!(header.oldest_seq, 6);
+        assert_eq!(header.latest_seq, 5); // No new entries yet
+
+        // Append new entry should start from sequence 6
         let payload = WALTransactionPayload {
             user_root: None,
             system_root: None,
@@ -480,7 +431,40 @@ mod tests {
         let mut entry = WALEntry::new("cf_new".to_string(), 100, payload);
         let seq = wal.append(&mut entry).unwrap();
         assert_eq!(seq, 6);
+    }
 
-        wal.shutdown().unwrap();
+    #[test]
+    fn test_wal_persistence() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+
+        // Create WAL and append entries
+        {
+            let wal = WALJournal::open(&path).unwrap();
+
+            for i in 0..3 {
+                let payload = WALTransactionPayload {
+                    user_root: None,
+                    system_root: None,
+                    freed_pages: vec![],
+                    allocated_pages: vec![],
+                    durability: crate::Durability::Immediate,
+                };
+
+                let mut entry = WALEntry::new(format!("cf_{i}"), i, payload);
+                wal.append(&mut entry).unwrap();
+            }
+
+            wal.sync().unwrap();
+        } // WAL closed
+
+        // Reopen and verify entries persisted
+        {
+            let wal = WALJournal::open(&path).unwrap();
+            let entries = wal.read_from(1).unwrap();
+            assert_eq!(entries.len(), 3);
+            assert_eq!(entries[0].sequence, 1);
+            assert_eq!(entries[2].sequence, 3);
+        }
     }
 }

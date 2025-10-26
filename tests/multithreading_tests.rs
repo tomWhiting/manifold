@@ -1,6 +1,8 @@
 #[cfg(not(target_os = "wasi"))]
 mod multithreading_test {
-    use manifold::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
+    use manifold::{
+        Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
+    };
     use std::sync::Arc;
     use std::thread;
 
