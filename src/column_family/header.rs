@@ -7,43 +7,152 @@ use std::io;
 pub const MAGIC_NUMBER: [u8; 9] = *b"redb-cf\x1A\x0A";
 
 /// Current format version for the master header.
-pub const FORMAT_VERSION: u8 = 1;
+/// Version 2 introduces segmented column families with free space tracking.
+pub const FORMAT_VERSION: u8 = 2;
 
 /// Size of one page in bytes (4KB).
 ///
 /// The master header must fit within a single page.
 pub(crate) const PAGE_SIZE: usize = 4096;
 
-/// Metadata describing a single column family's location and size within the file.
+/// A contiguous segment of storage within the database file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    /// Absolute byte offset where this segment begins in the file.
+    pub offset: u64,
+    /// Size of this segment in bytes.
+    pub size: u64,
+}
+
+impl Segment {
+    /// Creates a new segment.
+    pub fn new(offset: u64, size: u64) -> Self {
+        Self { offset, size }
+    }
+
+    /// Returns the end offset (exclusive) of this segment.
+    pub fn end(&self) -> u64 {
+        self.offset + self.size
+    }
+
+    /// Serializes this segment to bytes.
+    ///
+    /// Format: `offset` (u64) | `size` (u64)
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(&self.offset.to_le_bytes());
+        bytes.extend_from_slice(&self.size.to_le_bytes());
+        bytes
+    }
+
+    /// Deserializes a segment from bytes.
+    ///
+    /// Returns (`segment`, `bytes_consumed`) on success.
+    fn from_bytes(data: &[u8]) -> io::Result<(Self, usize)> {
+        if data.len() < 16 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "insufficient data for segment",
+            ));
+        }
+
+        let offset = u64::from_le_bytes(data[0..8].try_into().unwrap());
+        let size = u64::from_le_bytes(data[8..16].try_into().unwrap());
+
+        Ok((Self { offset, size }, 16))
+    }
+}
+
+/// A free (deleted/unused) segment that can be reclaimed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreeSegment {
+    /// Absolute byte offset where this free segment begins.
+    pub offset: u64,
+    /// Size of this free segment in bytes.
+    pub size: u64,
+}
+
+impl FreeSegment {
+    /// Creates a new free segment.
+    pub fn new(offset: u64, size: u64) -> Self {
+        Self { offset, size }
+    }
+
+    /// Serializes this free segment to bytes.
+    ///
+    /// Format: `offset` (u64) | `size` (u64)
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(&self.offset.to_le_bytes());
+        bytes.extend_from_slice(&self.size.to_le_bytes());
+        bytes
+    }
+
+    /// Deserializes a free segment from bytes.
+    ///
+    /// Returns (`free_segment`, `bytes_consumed`) on success.
+    fn from_bytes(data: &[u8]) -> io::Result<(Self, usize)> {
+        if data.len() < 16 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "insufficient data for free segment",
+            ));
+        }
+
+        let offset = u64::from_le_bytes(data[0..8].try_into().unwrap());
+        let size = u64::from_le_bytes(data[8..16].try_into().unwrap());
+
+        Ok((Self { offset, size }, 16))
+    }
+}
+
+/// Metadata describing a column family composed of one or more segments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnFamilyMetadata {
     /// Name of the column family.
     pub name: String,
-    /// Absolute byte offset where this column family begins in the file.
-    pub offset: u64,
-    /// Size allocated to this column family in bytes.
-    pub size: u64,
+    /// Segments that make up this column family.
+    /// Multiple segments enable non-contiguous growth without data movement.
+    pub segments: Vec<Segment>,
 }
 
 impl ColumnFamilyMetadata {
-    /// Creates a new column family metadata entry.
+    /// Creates a new column family metadata entry with a single segment.
     pub fn new(name: String, offset: u64, size: u64) -> Self {
-        Self { name, offset, size }
+        Self {
+            name,
+            segments: vec![Segment::new(offset, size)],
+        }
+    }
+
+    /// Creates a new column family metadata entry with multiple segments.
+    pub fn with_segments(name: String, segments: Vec<Segment>) -> Self {
+        Self { name, segments }
+    }
+
+    /// Returns the total size of all segments.
+    pub fn total_size(&self) -> u64 {
+        self.segments.iter().map(|s| s.size).sum()
     }
 
     /// Serializes this metadata entry to bytes.
     ///
-    /// Format: `name_len` (u32) | `name_bytes` | `offset` (u64) | `size` (u64)
+    /// Format: `name_len` (u32) | `name_bytes` | `segment_count` (u32) | segments
     fn to_bytes(&self) -> Vec<u8> {
         let name_bytes = self.name.as_bytes();
         let name_len =
             u32::try_from(name_bytes.len()).expect("column family name exceeds maximum length");
+        let segment_count =
+            u32::try_from(self.segments.len()).expect("too many segments in column family");
 
-        let mut bytes = Vec::with_capacity(4 + name_bytes.len() + 8 + 8);
+        let mut bytes = Vec::with_capacity(4 + name_bytes.len() + 4 + self.segments.len() * 16);
         bytes.extend_from_slice(&name_len.to_le_bytes());
         bytes.extend_from_slice(name_bytes);
-        bytes.extend_from_slice(&self.offset.to_le_bytes());
-        bytes.extend_from_slice(&self.size.to_le_bytes());
+        bytes.extend_from_slice(&segment_count.to_le_bytes());
+
+        for segment in &self.segments {
+            bytes.extend_from_slice(&segment.to_bytes());
+        }
 
         bytes
     }
@@ -61,12 +170,12 @@ impl ColumnFamilyMetadata {
 
         let name_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
 
-        if data.len() < 4 + name_len + 16 {
+        if data.len() < 4 + name_len + 4 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "insufficient data for metadata entry: need {}, have {}",
-                    4 + name_len + 16,
+                    "insufficient data for metadata entry: need at least {}, have {}",
+                    4 + name_len + 4,
                     data.len()
                 ),
             ));
@@ -79,28 +188,41 @@ impl ColumnFamilyMetadata {
             )
         })?;
 
-        let offset_start = 4 + name_len;
-        let offset = u64::from_le_bytes(data[offset_start..offset_start + 8].try_into().unwrap());
+        let segment_count_start = 4 + name_len;
+        let segment_count = u32::from_le_bytes(
+            data[segment_count_start..segment_count_start + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
 
-        let size_start = offset_start + 8;
-        let size = u64::from_le_bytes(data[size_start..size_start + 8].try_into().unwrap());
+        let mut segments = Vec::with_capacity(segment_count);
+        let mut offset = segment_count_start + 4;
 
-        let bytes_consumed = 4 + name_len + 16;
+        for _ in 0..segment_count {
+            let (segment, consumed) = Segment::from_bytes(&data[offset..])?;
+            segments.push(segment);
+            offset += consumed;
+        }
 
-        Ok((Self { name, offset, size }, bytes_consumed))
+        let bytes_consumed = offset;
+
+        Ok((Self { name, segments }, bytes_consumed))
     }
 }
 
 /// Master header describing the layout of all column families within a database file.
 ///
 /// The master header occupies the first page (4KB) of the file and contains metadata
-/// about all column families including their names, offsets, and sizes.
+/// about all column families including their names and segments, plus a free list
+/// for deleted/reclaimed space.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MasterHeader {
     /// Version of the header format.
     pub version: u8,
     /// Metadata for all column families in the database.
     pub column_families: Vec<ColumnFamilyMetadata>,
+    /// Free segments available for reuse.
+    pub free_segments: Vec<FreeSegment>,
 }
 
 impl MasterHeader {
@@ -109,6 +231,7 @@ impl MasterHeader {
         Self {
             version: FORMAT_VERSION,
             column_families: Vec::new(),
+            free_segments: Vec::new(),
         }
     }
 
@@ -117,7 +240,26 @@ impl MasterHeader {
         Self {
             version: FORMAT_VERSION,
             column_families,
+            free_segments: Vec::new(),
         }
+    }
+
+    /// Finds the end of the last allocated segment in the file.
+    /// Returns `PAGE_SIZE` if no segments exist (first allocation starts after header).
+    pub fn end_of_file(&self) -> u64 {
+        let mut max_end = PAGE_SIZE as u64;
+
+        for cf in &self.column_families {
+            for segment in &cf.segments {
+                max_end = max_end.max(segment.end());
+            }
+        }
+
+        for free_seg in &self.free_segments {
+            max_end = max_end.max(free_seg.offset + free_seg.size);
+        }
+
+        max_end
     }
 
     /// Serializes the master header to bytes that fit within one page.
@@ -127,6 +269,8 @@ impl MasterHeader {
     /// - version (1 byte)
     /// - `cf_count` (u32)
     /// - metadata entries (variable)
+    /// - `free_count` (u32)
+    /// - free segment entries (variable)
     /// - padding to page size
     ///
     /// Returns error if serialized size exceeds `PAGE_SIZE`.
@@ -146,6 +290,15 @@ impl MasterHeader {
         // Serialize each column family metadata
         for cf in &self.column_families {
             bytes.extend_from_slice(&cf.to_bytes());
+        }
+
+        // Free segment count
+        let free_count = u32::try_from(self.free_segments.len()).expect("too many free segments");
+        bytes.extend_from_slice(&free_count.to_le_bytes());
+
+        // Serialize each free segment
+        for free_seg in &self.free_segments {
+            bytes.extend_from_slice(&free_seg.to_bytes());
         }
 
         // Check size constraint
@@ -207,9 +360,28 @@ impl MasterHeader {
             offset += consumed;
         }
 
+        // Read free segment count
+        if offset + 4 > data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "insufficient data for free segment count",
+            ));
+        }
+        let free_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+
+        // Deserialize free segments
+        let mut free_segments = Vec::with_capacity(free_count);
+        for _ in 0..free_count {
+            let (free_seg, consumed) = FreeSegment::from_bytes(&data[offset..])?;
+            free_segments.push(free_seg);
+            offset += consumed;
+        }
+
         let header = Self {
             version,
             column_families,
+            free_segments,
         };
 
         // Validate the header
@@ -222,8 +394,9 @@ impl MasterHeader {
     ///
     /// Checks:
     /// - Column family names are non-empty and unique
-    /// - Offsets are page-aligned and non-overlapping
-    /// - Allocated sizes are positive
+    /// - Segment offsets are page-aligned
+    /// - Segment sizes are positive
+    /// - No overlapping segments (CF or free)
     pub fn validate(&self) -> io::Result<()> {
         // Check for empty or duplicate names
         let mut seen_names = std::collections::HashSet::new();
@@ -241,57 +414,97 @@ impl MasterHeader {
                     format!("duplicate column family name: {}", cf.name),
                 ));
             }
+
+            // Validate each segment
+            for segment in &cf.segments {
+                // Offset should be page-aligned
+                if segment.offset % PAGE_SIZE as u64 != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "column family '{}' segment offset {} is not page-aligned",
+                            cf.name, segment.offset
+                        ),
+                    ));
+                }
+
+                // Size must be positive
+                if segment.size == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("column family '{}' has segment with zero size", cf.name),
+                    ));
+                }
+
+                // Check for overflow
+                segment.offset.checked_add(segment.size).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "column family '{}' segment offset + size overflows",
+                            cf.name
+                        ),
+                    )
+                })?;
+            }
         }
 
-        // Check offsets and sizes
-        for cf in &self.column_families {
-            // Offset should be page-aligned
-            if cf.offset % PAGE_SIZE as u64 != 0 {
+        // Validate free segments
+        for free_seg in &self.free_segments {
+            if free_seg.offset % PAGE_SIZE as u64 != 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "column family '{}' offset {} is not page-aligned",
-                        cf.name, cf.offset
+                        "free segment offset {} is not page-aligned",
+                        free_seg.offset
                     ),
                 ));
             }
 
-            // Size must be positive
-            if cf.size == 0 {
+            if free_seg.size == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("column family '{}' has zero size", cf.name),
+                    "free segment has zero size",
                 ));
             }
 
-            // Check for overflow
-            cf.offset.checked_add(cf.size).ok_or_else(|| {
+            free_seg.offset.checked_add(free_seg.size).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("column family '{}' offset + size overflows", cf.name),
+                    "free segment offset + size overflows",
                 )
             })?;
         }
 
-        // Check for overlapping ranges
-        let mut ranges: Vec<_> = self
-            .column_families
-            .iter()
-            .map(|cf| (cf.offset, cf.offset + cf.size, &cf.name))
-            .collect();
+        // Collect all segments (CF and free) and check for overlaps
+        let mut all_segments: Vec<(u64, u64, String)> = Vec::new();
 
-        ranges.sort_by_key(|(start, _, _)| *start);
+        for cf in &self.column_families {
+            for segment in &cf.segments {
+                all_segments.push((segment.offset, segment.end(), cf.name.clone()));
+            }
+        }
 
-        for i in 0..ranges.len() {
-            for j in i + 1..ranges.len() {
-                let (start1, end1, name1) = ranges[i];
-                let (start2, end2, name2) = ranges[j];
+        for (i, free_seg) in self.free_segments.iter().enumerate() {
+            all_segments.push((
+                free_seg.offset,
+                free_seg.offset + free_seg.size,
+                format!("free#{i}"),
+            ));
+        }
 
-                // Check if ranges overlap
+        all_segments.sort_by_key(|(start, _, _)| *start);
+
+        for i in 0..all_segments.len() {
+            for j in i + 1..all_segments.len() {
+                let (start1, end1, name1) = &all_segments[i];
+                let (start2, end2, name2) = &all_segments[j];
+
+                // Check if segments overlap
                 if start1 < end2 && start2 < end1 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("column families '{name1}' and '{name2}' have overlapping ranges"),
+                        format!("segments '{name1}' and '{name2}' overlap"),
                     ));
                 }
             }
@@ -334,6 +547,7 @@ mod tests {
 
         assert_eq!(decoded.column_families.len(), 1);
         assert_eq!(decoded.column_families[0], cf);
+        assert_eq!(decoded.free_segments.len(), 0);
     }
 
     #[test]
@@ -427,6 +641,7 @@ mod tests {
 
         let result = header.validate();
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not page-aligned"));
     }
 
     #[test]
@@ -436,16 +651,24 @@ mod tests {
 
         let result = header.validate();
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("zero size"));
     }
 
     #[test]
     fn test_validate_overlapping_ranges() {
-        let cf1 = ColumnFamilyMetadata::new("users".to_string(), PAGE_SIZE as u64, 2048);
-        let cf2 = ColumnFamilyMetadata::new("products".to_string(), PAGE_SIZE as u64 + 1024, 2048);
+        let cf1 =
+            ColumnFamilyMetadata::new("users".to_string(), PAGE_SIZE as u64, PAGE_SIZE as u64 * 2);
+        let cf2 = ColumnFamilyMetadata::new(
+            "products".to_string(),
+            (PAGE_SIZE * 2) as u64,
+            PAGE_SIZE as u64 * 2,
+        );
         let header = MasterHeader::with_column_families(vec![cf1, cf2]);
 
         let result = header.validate();
         assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("overlap"));
     }
 
     #[test]
@@ -486,5 +709,126 @@ mod tests {
         let (decoded, consumed) = ColumnFamilyMetadata::from_bytes(&bytes).unwrap();
         assert_eq!(decoded, cf);
         assert_eq!(consumed, bytes.len());
+    }
+
+    #[test]
+    fn test_multi_segment_column_family() {
+        let segments = vec![
+            Segment::new(PAGE_SIZE as u64, 1024 * 1024),
+            Segment::new((PAGE_SIZE as u64) + 2 * 1024 * 1024, 512 * 1024),
+            Segment::new((PAGE_SIZE as u64) + 3 * 1024 * 1024, 256 * 1024),
+        ];
+        let cf = ColumnFamilyMetadata::with_segments("users".to_string(), segments.clone());
+
+        assert_eq!(cf.segments.len(), 3);
+        assert_eq!(cf.total_size(), 1024 * 1024 + 512 * 1024 + 256 * 1024);
+
+        let bytes = cf.to_bytes();
+        let (decoded, _) = ColumnFamilyMetadata::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.segments, segments);
+    }
+
+    #[test]
+    fn test_free_segments_serialization() {
+        let cf = ColumnFamilyMetadata::new("users".to_string(), PAGE_SIZE as u64, 1024 * 1024);
+        let mut header = MasterHeader::with_column_families(vec![cf]);
+
+        header.free_segments = vec![
+            FreeSegment::new(PAGE_SIZE as u64 + 2 * 1024 * 1024, 512 * 1024),
+            FreeSegment::new(PAGE_SIZE as u64 + 4 * 1024 * 1024, 256 * 1024),
+        ];
+
+        let bytes = header.to_bytes().unwrap();
+        let decoded = MasterHeader::from_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.free_segments.len(), 2);
+        assert_eq!(
+            decoded.free_segments[0].offset,
+            PAGE_SIZE as u64 + 2 * 1024 * 1024
+        );
+        assert_eq!(decoded.free_segments[0].size, 512 * 1024);
+        assert_eq!(
+            decoded.free_segments[1].offset,
+            PAGE_SIZE as u64 + 4 * 1024 * 1024
+        );
+        assert_eq!(decoded.free_segments[1].size, 256 * 1024);
+    }
+
+    #[test]
+    fn test_end_of_file_calculation() {
+        let mut header = MasterHeader::new();
+
+        // Empty header should return PAGE_SIZE
+        assert_eq!(header.end_of_file(), PAGE_SIZE as u64);
+
+        // Add a column family
+        let cf1 = ColumnFamilyMetadata::new("users".to_string(), PAGE_SIZE as u64, 1024 * 1024);
+        header.column_families.push(cf1);
+        assert_eq!(header.end_of_file(), PAGE_SIZE as u64 + 1024 * 1024);
+
+        // Add another column family with multiple segments
+        let cf2 = ColumnFamilyMetadata::with_segments(
+            "products".to_string(),
+            vec![
+                Segment::new(PAGE_SIZE as u64 + 2 * 1024 * 1024, 512 * 1024),
+                Segment::new(PAGE_SIZE as u64 + 4 * 1024 * 1024, 256 * 1024),
+            ],
+        );
+        header.column_families.push(cf2);
+        assert_eq!(
+            header.end_of_file(),
+            PAGE_SIZE as u64 + 4 * 1024 * 1024 + 256 * 1024
+        );
+
+        // Add a free segment beyond current EOF
+        header.free_segments.push(FreeSegment::new(
+            PAGE_SIZE as u64 + 6 * 1024 * 1024,
+            128 * 1024,
+        ));
+        assert_eq!(
+            header.end_of_file(),
+            PAGE_SIZE as u64 + 6 * 1024 * 1024 + 128 * 1024
+        );
+    }
+
+    #[test]
+    fn test_segment_overlap_detection() {
+        let cf1 = ColumnFamilyMetadata::with_segments(
+            "users".to_string(),
+            vec![Segment::new(PAGE_SIZE as u64, 1024 * 1024)],
+        );
+        let cf2 = ColumnFamilyMetadata::with_segments(
+            "products".to_string(),
+            vec![Segment::new(PAGE_SIZE as u64 + 512 * 1024, 1024 * 1024)],
+        );
+
+        let header = MasterHeader::with_column_families(vec![cf1, cf2]);
+        let result = header.validate();
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("overlap"));
+    }
+
+    #[test]
+    fn test_free_segment_validation() {
+        let cf = ColumnFamilyMetadata::new("users".to_string(), PAGE_SIZE as u64, 1024 * 1024);
+        let mut header = MasterHeader::with_column_families(vec![cf]);
+
+        // Test unaligned free segment
+        header.free_segments.push(FreeSegment::new(1000, 1024));
+        assert!(header.validate().is_err());
+
+        // Test zero-size free segment
+        header.free_segments.clear();
+        header
+            .free_segments
+            .push(FreeSegment::new(PAGE_SIZE as u64, 0));
+        assert!(header.validate().is_err());
+    }
+
+    #[test]
+    fn test_segment_end() {
+        let segment = Segment::new(4096, 1024);
+        assert_eq!(segment.end(), 5120);
     }
 }

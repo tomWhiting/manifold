@@ -1,59 +1,56 @@
 use crate::StorageBackend;
+use crate::column_family::header::Segment;
 use std::fmt::{Debug, Formatter};
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-/// A storage backend that operates on a partition (byte range) of an underlying storage backend.
+/// A storage backend that operates on one or more segments within an underlying storage backend.
 ///
-/// This backend wraps another `StorageBackend` and translates all offset-based operations
-/// to operate within a specific byte range of the underlying storage. This allows multiple
-/// independent database instances to coexist within a single physical file.
+/// This backend supports multi-segment column families where data can be stored in non-contiguous
+/// regions of the file. This enables instant growth without moving existing data - new segments
+/// are simply appended at the end of the file.
 ///
-/// # Offset Translation
+/// # Virtual Offset Translation
 ///
-/// All read/write operations are translated by adding `partition_offset` to the requested offset:
-/// - `read(offset, buf)` becomes `inner.read(partition_offset + offset, buf)`
-/// - `write(offset, data)` becomes `inner.write(partition_offset + offset, data)`
+/// The backend presents a continuous virtual address space to the caller, mapping it to
+/// physical segments transparently:
+/// - Virtual offset 0-1GB might map to physical offset 4KB-1GB (segment 1)
+/// - Virtual offset 1GB-1.5GB might map to physical offset 5GB-5.5GB (segment 2)
 ///
-/// The `len()` method returns `partition_size` rather than the underlying storage length,
-/// making the partition appear as a complete storage backend to the caller.
+/// # Auto-Expansion
 ///
-/// # Bounds Checking
-///
-/// All operations are bounds-checked to ensure they stay within the partition:
-/// - Operations that would exceed `partition_size` return `io::ErrorKind::InvalidInput`
-/// - Overflow checks prevent arithmetic overflow on offset calculations
+/// When a write would exceed the total capacity of all segments, the backend can automatically
+/// request a new segment via the expansion callback. This makes growth transparent to the
+/// Database instance.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use redb::column_family::PartitionedStorageBackend;
+/// use redb::column_family::{PartitionedStorageBackend, Segment};
 /// use redb::backends::FileBackend;
 /// use std::sync::Arc;
 ///
 /// let file_backend = Arc::new(FileBackend::new(file)?);
 ///
-/// // Create two partitions in the same file
-/// let partition1 = PartitionedStorageBackend::new(
-///     file_backend.clone(),
-///     4096,              // Start at 4KB (after master header)
-///     1024 * 1024 * 1024 // 1GB partition
-/// );
+/// let segments = vec![
+///     Segment::new(4096, 1024 * 1024 * 1024),  // 1GB at 4KB
+///     Segment::new(5 * 1024 * 1024 * 1024, 512 * 1024 * 1024), // 512MB at 5GB
+/// ];
 ///
-/// let partition2 = PartitionedStorageBackend::new(
-///     file_backend.clone(),
-///     4096 + 1024 * 1024 * 1024, // Start after partition1
-///     1024 * 1024 * 1024          // 1GB partition
+/// let backend = PartitionedStorageBackend::with_segments(
+///     file_backend,
+///     segments,
+///     None, // No auto-expansion
 /// );
 /// ```
 pub struct PartitionedStorageBackend {
     inner: Arc<dyn StorageBackend>,
-    partition_offset: u64,
-    partition_size: u64,
+    segments: Arc<RwLock<Vec<Segment>>>,
+    expansion_callback: Option<Arc<dyn Fn(u64) -> io::Result<Segment> + Send + Sync>>,
 }
 
 impl PartitionedStorageBackend {
-    /// Creates a new partitioned storage backend.
+    /// Creates a new partitioned storage backend with a single segment (for backward compatibility).
     ///
     /// # Arguments
     ///
@@ -72,133 +69,209 @@ impl PartitionedStorageBackend {
 
         Self {
             inner,
-            partition_offset,
-            partition_size,
+            segments: Arc::new(RwLock::new(vec![Segment::new(
+                partition_offset,
+                partition_size,
+            )])),
+            expansion_callback: None,
         }
     }
 
-    /// Validates that an operation at the given offset and length stays within partition bounds.
+    /// Creates a new partitioned storage backend with multiple segments.
     ///
-    /// Returns `Ok(translated_offset)` if the operation is valid, where `translated_offset`
-    /// is the absolute offset in the underlying storage.
+    /// # Arguments
     ///
-    /// Returns `Err` if:
-    /// - `offset + len` exceeds `partition_size`
-    /// - `partition_offset + offset` would overflow
-    fn validate_and_translate(&self, offset: u64, len: usize) -> io::Result<u64> {
-        let len_u64 = len as u64;
+    /// * `inner` - The underlying storage backend (wrapped in Arc for sharing)
+    /// * `segments` - Vector of segments making up this partition
+    /// * `expansion_callback` - Optional callback to request new segments for auto-expansion
+    pub fn with_segments(
+        inner: Arc<dyn StorageBackend>,
+        segments: Vec<Segment>,
+        expansion_callback: Option<Arc<dyn Fn(u64) -> io::Result<Segment> + Send + Sync>>,
+    ) -> Self {
+        Self {
+            inner,
+            segments: Arc::new(RwLock::new(segments)),
+            expansion_callback,
+        }
+    }
 
-        // Check if offset + len exceeds partition size
-        let end_offset = offset.checked_add(len_u64).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("offset + length overflows: offset={offset}, len={len}"),
-            )
-        })?;
+    /// Returns the total size of all segments (virtual address space size).
+    fn total_size(&self) -> u64 {
+        let segments = self.segments.read().unwrap();
+        segments.iter().map(|s| s.size).sum()
+    }
 
-        if end_offset > self.partition_size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "operation exceeds partition bounds: offset={}, len={}, partition_size={}",
-                    offset, len, self.partition_size
-                ),
-            ));
+    /// Maps a virtual offset to a physical offset in a specific segment.
+    ///
+    /// Returns `(physical_offset, remaining_in_segment)` on success.
+    fn virtual_to_physical(&self, virtual_offset: u64) -> io::Result<(u64, u64)> {
+        let segments = self.segments.read().unwrap();
+        let mut current_virtual = 0u64;
+
+        for segment in segments.iter() {
+            let segment_end = current_virtual + segment.size;
+
+            if virtual_offset < segment_end {
+                // Found the segment containing this virtual offset
+                let offset_in_segment = virtual_offset - current_virtual;
+                let physical_offset = segment.offset + offset_in_segment;
+                let remaining_in_segment = segment.size - offset_in_segment;
+                return Ok((physical_offset, remaining_in_segment));
+            }
+
+            current_virtual = segment_end;
         }
 
-        // Translate to absolute offset in underlying storage
-        let translated_offset = self.partition_offset.checked_add(offset).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "translated offset overflows: partition_offset={}, offset={}",
-                    self.partition_offset, offset
-                ),
-            )
-        })?;
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("virtual offset {virtual_offset} exceeds total size {current_virtual}"),
+        ))
+    }
 
-        Ok(translated_offset)
+    /// Attempts to expand the partition by requesting a new segment.
+    fn try_expand(&self, requested_size: u64) -> io::Result<()> {
+        if let Some(callback) = &self.expansion_callback {
+            let new_segment = callback(requested_size)?;
+            let mut segments = self.segments.write().unwrap();
+            segments.push(new_segment);
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot expand partition: no expansion callback configured",
+            ))
+        }
     }
 }
 
 impl Debug for PartitionedStorageBackend {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let segments = self.segments.read().unwrap();
         f.debug_struct("PartitionedStorageBackend")
-            .field("partition_offset", &self.partition_offset)
-            .field("partition_size", &self.partition_size)
+            .field("segment_count", &segments.len())
+            .field("total_size", &self.total_size())
             .finish_non_exhaustive()
     }
 }
 
 impl StorageBackend for PartitionedStorageBackend {
     fn len(&self) -> io::Result<u64> {
-        // Return the actual allocated length within this partition
-        // This is calculated as: min(underlying_len - partition_offset, partition_size)
-        // If the file hasn't been extended to cover this partition yet, this will return 0
+        // Return the actual allocated length across all segments
         let underlying_len = self.inner.len()?;
+        let segments = self.segments.read().unwrap();
 
-        if underlying_len <= self.partition_offset {
-            // Partition hasn't been allocated yet
-            Ok(0)
-        } else {
-            // Return the allocated portion, capped at partition_size
-            let allocated = underlying_len - self.partition_offset;
-            Ok(allocated.min(self.partition_size))
+        let mut total_allocated = 0u64;
+
+        for segment in segments.iter() {
+            if underlying_len <= segment.offset {
+                // This segment hasn't been allocated yet
+                break;
+            }
+
+            let segment_allocated = (underlying_len - segment.offset).min(segment.size);
+            total_allocated += segment_allocated;
+
+            // If this segment isn't fully allocated, stop counting
+            if segment_allocated < segment.size {
+                break;
+            }
         }
+
+        Ok(total_allocated)
     }
 
     fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
-        let translated_offset = self.validate_and_translate(offset, out.len())?;
-        self.inner.read(translated_offset, out)
+        let mut bytes_read = 0;
+        let mut current_offset = offset;
+
+        while bytes_read < out.len() {
+            let (physical_offset, remaining_in_segment) =
+                self.virtual_to_physical(current_offset)?;
+
+            #[allow(clippy::cast_possible_truncation)]
+            let bytes_to_read =
+                (out.len() - bytes_read).min(remaining_in_segment.min(usize::MAX as u64) as usize);
+
+            self.inner.read(
+                physical_offset,
+                &mut out[bytes_read..bytes_read + bytes_to_read],
+            )?;
+
+            bytes_read += bytes_to_read;
+            current_offset += bytes_to_read as u64;
+        }
+
+        Ok(())
     }
 
     fn set_len(&self, len: u64) -> io::Result<()> {
-        if len > self.partition_size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "cannot set length beyond partition size: requested={}, partition_size={}",
-                    len, self.partition_size
-                ),
-            ));
+        let current_total = self.total_size();
+
+        // If requested length exceeds current capacity, try to expand
+        if len > current_total {
+            let needed = len - current_total;
+            // Add 10% buffer to reduce frequent small expansions
+            let allocation_size = needed + (needed / 10).max(1024 * 1024); // At least 1MB buffer
+            self.try_expand(allocation_size)?;
         }
 
-        // Calculate the absolute length in the underlying storage
-        let absolute_len = self.partition_offset.checked_add(len).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "absolute length calculation overflows",
-            )
-        })?;
+        // Calculate the maximum physical end we need to allocate
+        let segments = self.segments.read().unwrap();
+        let mut remaining = len;
+        let mut max_physical_end = 0u64;
 
-        // Only grow the underlying storage if needed. We intentionally do not shrink
-        // the underlying storage when len < current_len, as:
-        // 1. Other partitions may be using space beyond this partition
-        // 2. Shrinking would require coordination across all partitions
-        // 3. The storage backend will handle any necessary compaction
-        //
-        // This design choice favors simplicity and safety over aggressive space reclamation.
+        for segment in segments.iter() {
+            if remaining == 0 {
+                break;
+            }
+
+            let used_in_segment = remaining.min(segment.size);
+            let physical_end = segment.offset + used_in_segment;
+            max_physical_end = max_physical_end.max(physical_end);
+
+            remaining = remaining.saturating_sub(used_in_segment);
+        }
+
+        // Only grow the underlying storage if needed (no-shrink policy)
         let current_underlying_len = self.inner.len()?;
-        if absolute_len > current_underlying_len {
-            self.inner.set_len(absolute_len)?;
+        if max_physical_end > current_underlying_len {
+            self.inner.set_len(max_physical_end)?;
         }
 
         Ok(())
     }
 
     fn sync_data(&self) -> io::Result<()> {
-        // Sync the entire underlying storage
         self.inner.sync_data()
     }
 
     fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
-        let translated_offset = self.validate_and_translate(offset, data.len())?;
-        self.inner.write(translated_offset, data)
+        let mut bytes_written = 0;
+        let mut current_offset = offset;
+
+        while bytes_written < data.len() {
+            let (physical_offset, remaining_in_segment) =
+                self.virtual_to_physical(current_offset)?;
+
+            #[allow(clippy::cast_possible_truncation)]
+            let bytes_to_write = (data.len() - bytes_written)
+                .min(remaining_in_segment.min(usize::MAX as u64) as usize);
+
+            self.inner.write(
+                physical_offset,
+                &data[bytes_written..bytes_written + bytes_to_write],
+            )?;
+
+            bytes_written += bytes_to_write;
+            current_offset += bytes_to_write as u64;
+        }
+
+        Ok(())
     }
 
     fn close(&self) -> io::Result<()> {
         // Do not close the underlying storage, as other partitions may still be using it
-        // The underlying storage will be closed when the last Arc reference is dropped
         Ok(())
     }
 }
@@ -209,7 +282,7 @@ mod tests {
     use crate::backends::InMemoryBackend;
 
     #[test]
-    fn test_len_returns_allocated_size() {
+    fn test_single_segment_len() {
         let inner = Arc::new(InMemoryBackend::new());
         let backend = PartitionedStorageBackend::new(inner.clone(), 1000, 5000);
 
@@ -220,7 +293,6 @@ mod tests {
         backend.set_len(3000).unwrap();
         assert_eq!(backend.len().unwrap(), 3000);
 
-        // Can't exceed partition size
         backend.set_len(5000).unwrap();
         assert_eq!(backend.len().unwrap(), 5000);
     }
@@ -319,14 +391,13 @@ mod tests {
     }
 
     #[test]
-    fn test_set_len_exceeds_partition_size() {
+    fn test_set_len_without_expansion_callback() {
         let inner = Arc::new(InMemoryBackend::new());
         let backend = PartitionedStorageBackend::new(inner, 1000, 5000);
 
+        // Without expansion callback, cannot exceed initial size
         let result = backend.set_len(6000);
-
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -418,25 +489,93 @@ mod tests {
     }
 
     #[test]
-    fn test_offset_arithmetic_overflow_handling() {
+    fn test_multi_segment_read_write() {
         let inner = Arc::new(InMemoryBackend::new());
-        // Use a large but reasonable offset that won't cause overflow in set_len
-        let backend = PartitionedStorageBackend::new(inner.clone(), 1_000_000, 10_000);
 
-        // Pre-size the partition to allow operations
-        backend.set_len(1000).unwrap();
+        let segments = vec![
+            Segment::new(1000, 1000),  // Virtual 0-1000 -> Physical 1000-2000
+            Segment::new(5000, 1000),  // Virtual 1000-2000 -> Physical 5000-6000
+            Segment::new(10000, 1000), // Virtual 2000-3000 -> Physical 10000-11000
+        ];
 
-        // Test offset translation works correctly with large offsets
-        let write_data = b"test";
-        backend.write(500, write_data).unwrap();
+        let backend = PartitionedStorageBackend::with_segments(inner.clone(), segments, None);
+        backend.set_len(3000).unwrap();
 
-        let mut read_buf = vec![0u8; write_data.len()];
-        backend.read(500, &mut read_buf).unwrap();
-        assert_eq!(&read_buf, write_data);
+        // Write data that spans multiple segments
+        // Create 200 bytes of data so it definitely spans segments
+        let mut data = Vec::new();
+        for i in 0u8..200 {
+            data.push(i);
+        }
 
-        // Verify translation occurred correctly (partition_offset + 500 = 1_000_500)
-        let mut verify_buf = vec![0u8; write_data.len()];
-        inner.read(1_000_500, &mut verify_buf).unwrap();
-        assert_eq!(&verify_buf, write_data);
+        // Write starting at virtual offset 900 (100 bytes before segment boundary)
+        backend.write(900, &data).unwrap();
+
+        // Read it back
+        let mut read_buf = vec![0u8; data.len()];
+        backend.read(900, &mut read_buf).unwrap();
+        assert_eq!(&read_buf, &data);
+
+        // Verify it was written to correct physical locations
+        // Virtual 900-1000 (100 bytes) -> Physical 1900-2000 (end of segment 1)
+        // Virtual 1000-1100 (100 bytes) -> Physical 5000-5100 (start of segment 2)
+        let first_segment_bytes = 100; // bytes from virtual 900-1000
+
+        let mut verify1 = vec![0u8; first_segment_bytes];
+        inner.read(1900, &mut verify1).unwrap(); // Physical 1000 + 900 = 1900
+        assert_eq!(&verify1, &data[..first_segment_bytes]);
+
+        let mut verify2 = vec![0u8; 100]; // Next 100 bytes in segment 2
+        inner.read(5000, &mut verify2).unwrap(); // Start of segment 2
+        assert_eq!(
+            &verify2,
+            &data[first_segment_bytes..first_segment_bytes + 100]
+        );
+    }
+
+    #[test]
+    fn test_multi_segment_total_size() {
+        let inner = Arc::new(InMemoryBackend::new());
+
+        let segments = vec![
+            Segment::new(1000, 1024),
+            Segment::new(5000, 2048),
+            Segment::new(10000, 512),
+        ];
+
+        let backend = PartitionedStorageBackend::with_segments(inner, segments, None);
+        assert_eq!(backend.total_size(), 1024 + 2048 + 512);
+    }
+
+    #[test]
+    fn test_virtual_to_physical_mapping() {
+        let inner = Arc::new(InMemoryBackend::new());
+
+        let segments = vec![Segment::new(4096, 1000), Segment::new(8192, 500)];
+
+        let backend = PartitionedStorageBackend::with_segments(inner, segments, None);
+
+        // Virtual offset 0 -> Physical 4096
+        let (phys, rem) = backend.virtual_to_physical(0).unwrap();
+        assert_eq!(phys, 4096);
+        assert_eq!(rem, 1000);
+
+        // Virtual offset 999 -> Physical 5095 (end of first segment)
+        let (phys, rem) = backend.virtual_to_physical(999).unwrap();
+        assert_eq!(phys, 5095);
+        assert_eq!(rem, 1);
+
+        // Virtual offset 1000 -> Physical 8192 (start of second segment)
+        let (phys, rem) = backend.virtual_to_physical(1000).unwrap();
+        assert_eq!(phys, 8192);
+        assert_eq!(rem, 500);
+
+        // Virtual offset 1499 -> Physical 8691 (end of second segment)
+        let (phys, rem) = backend.virtual_to_physical(1499).unwrap();
+        assert_eq!(phys, 8691);
+        assert_eq!(rem, 1);
+
+        // Virtual offset beyond capacity should fail
+        assert!(backend.virtual_to_physical(1500).is_err());
     }
 }

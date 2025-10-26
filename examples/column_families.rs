@@ -4,6 +4,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
+use tempfile::NamedTempFile;
 
 // Example: E-commerce application using column families for different domains
 //
@@ -28,8 +29,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Column Family Example: E-commerce Application");
     println!("==============================================\n");
 
+    // Use a temporary file for this example to ensure clean state
+    let tmpfile = NamedTempFile::new()?;
+    let db_path = tmpfile.path();
+
     // Create or open a column family database
-    let db = ColumnFamilyDatabase::open("ecommerce.redb")?;
+    let db = ColumnFamilyDatabase::open(db_path)?;
 
     // Create column families for different domains
     println!("Creating column families...");
