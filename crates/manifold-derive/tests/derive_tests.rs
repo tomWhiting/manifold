@@ -1,5 +1,5 @@
 use manifold::{Database, Key, ReadableDatabase, TableDefinition, Value};
-use redb_derive::{Key, Value};
+use manifold_derive::{Key, Value};
 use std::fmt::Debug;
 use tempfile::NamedTempFile;
 
