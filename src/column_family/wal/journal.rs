@@ -269,7 +269,6 @@ impl WALJournal {
     }
 
     /// Returns the current WAL file size in bytes.
-    #[cfg(test)]
     pub(crate) fn file_size(&self) -> io::Result<u64> {
         let file = self.file.lock().unwrap();
         Ok(file.metadata()?.len())

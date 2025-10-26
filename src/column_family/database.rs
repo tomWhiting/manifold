@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::backends::FileBackend;
 use crate::db::ReadableDatabase;
+use crate::tree_store::BtreeHeader;
 use crate::{
     Database, DatabaseError, ReadTransaction, StorageBackend, StorageError, TransactionError,
     WriteTransaction,
@@ -197,11 +198,117 @@ impl ColumnFamilyDatabase {
             column_families.insert(cf_meta.name.clone(), Arc::new(state));
         }
 
-        // Initialize WAL journal
+        // Initialize WAL journal and perform recovery if needed
         let wal_journal = if pool_size > 0 {
             let wal_path = path.with_extension("wal");
-            let journal = WALJournal::open(&wal_path)
+            let mut journal = WALJournal::open(&wal_path)
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+
+            // Perform WAL recovery by reading all entries from the journal
+            let entries = journal
+                .read_from(0)
+                .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+
+            if !entries.is_empty() {
+                #[cfg(feature = "logging")]
+                log::info!("WAL recovery: applying {} transactions", entries.len());
+
+                // Create temporary database instance for recovery (without WAL to avoid recursion)
+                let temp_db = Self {
+                    path: path.clone(),
+                    header_backend: Arc::clone(&header_backend),
+                    handle_pool: Arc::clone(&handle_pool),
+                    column_families: Arc::new(RwLock::new(column_families.clone())),
+                    header: Arc::clone(&header),
+                    wal_journal: None, // Important: no WAL during recovery to avoid appending during replay
+                };
+
+                // Apply each WAL entry to the database
+                for entry in &entries {
+                    // Get or create the column family
+                    let cf = temp_db.column_family(&entry.cf_name).map_err(|e| {
+                        DatabaseError::Storage(StorageError::from(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!(
+                                "column family '{}' not found during recovery: {}",
+                                entry.cf_name, e
+                            ),
+                        )))
+                    })?;
+
+                    // Get the Database instance
+                    let cf_db = cf.ensure_database()?;
+
+                    // Get the TransactionalMemory
+                    let mem = cf_db.get_memory();
+
+                    // Convert WAL payload to BtreeHeader format
+                    let data_root =
+                        entry
+                            .payload
+                            .user_root
+                            .map(|(page_num, checksum, length)| BtreeHeader {
+                                root: page_num,
+                                checksum,
+                                length,
+                            });
+
+                    let system_root =
+                        entry
+                            .payload
+                            .system_root
+                            .map(|(page_num, checksum, length)| BtreeHeader {
+                                root: page_num,
+                                checksum,
+                                length,
+                            });
+
+                    // Apply the WAL transaction
+                    mem.apply_wal_transaction(
+                        data_root,
+                        system_root,
+                        crate::transaction_tracker::TransactionId::new(entry.transaction_id),
+                    )?;
+                }
+
+                // Sync all column families to persist recovery
+                for cf_name in temp_db.list_column_families() {
+                    if let Ok(cf) = temp_db.column_family(&cf_name) {
+                        if let Ok(cf_db) = cf.ensure_database() {
+                            // Commit an empty transaction with durability to fsync
+                            let mut txn = cf_db.begin_write().map_err(|e| {
+                                DatabaseError::Storage(StorageError::from(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    format!("recovery fsync begin_write failed: {e}"),
+                                )))
+                            })?;
+                            txn.set_durability(crate::Durability::Immediate)
+                                .map_err(|e| {
+                                    DatabaseError::Storage(StorageError::from(io::Error::new(
+                                        io::ErrorKind::Other,
+                                        format!("recovery set_durability failed: {e}"),
+                                    )))
+                                })?;
+                            txn.commit().map_err(|e| {
+                                DatabaseError::Storage(StorageError::from(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    format!("recovery commit failed: {e}"),
+                                )))
+                            })?;
+                        }
+                    }
+                }
+
+                // Truncate WAL after successful recovery
+                let latest_seq = entries.last().unwrap().sequence;
+                journal
+                    .truncate(latest_seq + 1)
+                    .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+
+                #[cfg(feature = "logging")]
+                log::info!("WAL recovery completed successfully");
+            }
+
             Some(Arc::new(Mutex::new(journal)))
         } else {
             None
@@ -493,7 +600,7 @@ impl ColumnFamily {
     }
 
     /// Ensures the Database instance exists, creating it if necessary.
-    fn ensure_database(&self) -> Result<Arc<Database>, DatabaseError> {
+    pub(crate) fn ensure_database(&self) -> Result<Arc<Database>, DatabaseError> {
         let name = self.name.clone();
         let header = self.header.clone();
         let header_backend = self.header_backend.clone();

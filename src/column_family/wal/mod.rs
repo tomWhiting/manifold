@@ -6,13 +6,12 @@
 // - Background checkpointing to apply WAL entries to main database
 // - 200-250x performance improvement over default durability
 
+pub mod checkpoint;
 pub mod config;
 pub mod entry;
 pub mod journal;
 pub mod recovery;
 
-// Checkpoint module will be added in subsequent phase
-// pub mod checkpoint;
-
+pub(crate) use self::checkpoint::CheckpointManager;
 pub use self::config::WALConfig;
 pub(crate) use self::recovery::WALRecovery;
