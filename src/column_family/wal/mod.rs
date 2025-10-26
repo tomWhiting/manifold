@@ -10,8 +10,5 @@ pub mod checkpoint;
 pub mod config;
 pub mod entry;
 pub mod journal;
-pub mod recovery;
 
-pub(crate) use self::checkpoint::CheckpointManager;
 pub use self::config::WALConfig;
-pub(crate) use self::recovery::WALRecovery;

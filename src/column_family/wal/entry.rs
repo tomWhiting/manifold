@@ -1,5 +1,5 @@
 use crate::Durability;
-use crate::tree_store::{BtreeHeader, Checksum, PageNumber};
+use crate::tree_store::{Checksum, PageNumber};
 use std::io;
 
 /// A single entry in the Write-Ahead Log.
@@ -153,23 +153,6 @@ impl WALEntry {
 }
 
 impl WALTransactionPayload {
-    /// Creates a new transaction payload.
-    pub(crate) fn new(
-        user_root: Option<BtreeHeader>,
-        system_root: Option<BtreeHeader>,
-        freed_pages: Vec<PageNumber>,
-        allocated_pages: Vec<PageNumber>,
-        durability: Durability,
-    ) -> Self {
-        Self {
-            user_root: user_root.map(|h| (h.root, h.checksum, h.length)),
-            system_root: system_root.map(|h| (h.root, h.checksum, h.length)),
-            freed_pages,
-            allocated_pages,
-            durability,
-        }
-    }
-
     /// Serializes the payload into the given buffer.
     ///
     /// Format:

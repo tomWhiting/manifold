@@ -774,8 +774,9 @@ pub struct WriteTransaction {
     created_persistent_savepoints: Mutex<HashSet<SavepointId>>,
     deleted_persistent_savepoints: Mutex<Vec<(SavepointId, TransactionId)>>,
     // WAL integration for column families
-    wal_journal: Option<Arc<std::sync::Mutex<crate::column_family::wal::journal::WALJournal>>>,
+    wal_journal: Option<Arc<crate::column_family::wal::journal::WALJournal>>,
     cf_name: Option<String>,
+    checkpoint_manager: Option<Arc<crate::column_family::wal::checkpoint::CheckpointManager>>,
 }
 
 impl WriteTransaction {
@@ -810,6 +811,7 @@ impl WriteTransaction {
             deleted_persistent_savepoints: Mutex::new(vec![]),
             wal_journal: None,
             cf_name: None,
+            checkpoint_manager: None,
         })
     }
 
@@ -821,10 +823,12 @@ impl WriteTransaction {
     pub(crate) fn set_wal_context(
         &mut self,
         cf_name: String,
-        wal_journal: Arc<std::sync::Mutex<crate::column_family::wal::journal::WALJournal>>,
+        wal_journal: Arc<crate::column_family::wal::journal::WALJournal>,
+        checkpoint_manager: Option<Arc<crate::column_family::wal::checkpoint::CheckpointManager>>,
     ) {
         self.cf_name = Some(cf_name);
         self.wal_journal = Some(wal_journal);
+        self.checkpoint_manager = checkpoint_manager;
     }
 
     pub(crate) fn pending_free_pages(&self) -> Result<bool> {
@@ -1430,13 +1434,19 @@ impl WriteTransaction {
 
             let mut entry = WALEntry::new(cf_name.clone(), self.transaction_id.raw_id(), payload);
 
-            let journal = wal_journal.lock().unwrap();
-            journal
+            // Append to WAL and fsync (WALJournal has internal Mutex for thread-safety)
+            let sequence = wal_journal
                 .append(&mut entry)
-                .map_err(|e| CommitError::Storage(crate::StorageError::from(e)))?;
-            journal
+                .map_err(|e| CommitError::Storage(StorageError::from(e)))?;
+
+            wal_journal
                 .sync()
-                .map_err(|e| CommitError::Storage(crate::StorageError::from(e)))?;
+                .map_err(|e| CommitError::Storage(StorageError::from(e)))?;
+
+            // Register for checkpoint
+            if let Some(checkpoint_mgr) = &self.checkpoint_manager {
+                checkpoint_mgr.register_pending(sequence);
+            }
         }
 
         #[cfg(feature = "logging")]

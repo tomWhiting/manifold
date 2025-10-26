@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use crate::backends::FileBackend;
 use crate::db::ReadableDatabase;
@@ -16,6 +16,8 @@ use super::builder::ColumnFamilyDatabaseBuilder;
 use super::file_handle_pool::FileHandlePool;
 use super::header::{ColumnFamilyMetadata, FreeSegment, MasterHeader, PAGE_SIZE, Segment};
 use super::state::ColumnFamilyState;
+use super::wal::checkpoint::CheckpointManager;
+use super::wal::config::CheckpointConfig;
 use super::wal::journal::WALJournal;
 
 /// Default size allocated to a new column family (1 GB).
@@ -117,7 +119,8 @@ pub struct ColumnFamilyDatabase {
     handle_pool: Arc<FileHandlePool>,
     column_families: Arc<RwLock<HashMap<String, Arc<ColumnFamilyState>>>>,
     header: Arc<RwLock<MasterHeader>>,
-    wal_journal: Option<Arc<Mutex<WALJournal>>>,
+    wal_journal: Option<Arc<WALJournal>>,
+    checkpoint_manager: Option<Arc<crate::column_family::wal::checkpoint::CheckpointManager>>,
 }
 
 impl ColumnFamilyDatabase {
@@ -201,7 +204,7 @@ impl ColumnFamilyDatabase {
         // Initialize WAL journal and perform recovery if needed
         let wal_journal = if pool_size > 0 {
             let wal_path = path.with_extension("wal");
-            let mut journal = WALJournal::open(&wal_path)
+            let journal = WALJournal::open(&wal_path)
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
 
             // Perform WAL recovery by reading all entries from the journal
@@ -221,6 +224,7 @@ impl ColumnFamilyDatabase {
                     column_families: Arc::new(RwLock::new(column_families.clone())),
                     header: Arc::clone(&header),
                     wal_journal: None, // Important: no WAL during recovery to avoid appending during replay
+                    checkpoint_manager: None, // No checkpoint manager during recovery
                 };
 
                 // Apply each WAL entry to the database
@@ -309,7 +313,32 @@ impl ColumnFamilyDatabase {
                 log::info!("WAL recovery completed successfully");
             }
 
-            Some(Arc::new(Mutex::new(journal)))
+            Some(Arc::new(journal))
+        } else {
+            None
+        };
+
+        // Start checkpoint manager if WAL is enabled
+        let checkpoint_manager = if let Some(ref journal_arc) = wal_journal {
+            let config = CheckpointConfig {
+                interval: std::time::Duration::from_secs(60),
+                max_wal_size: 64 * 1024 * 1024,
+            };
+
+            // Create database Arc for checkpoint manager (temporary, will be replaced by self)
+            let db_arc = Arc::new(Self {
+                path: path.clone(),
+                header_backend: Arc::clone(&header_backend),
+                handle_pool: Arc::clone(&handle_pool),
+                column_families: Arc::new(RwLock::new(column_families.clone())),
+                header: Arc::clone(&header),
+                wal_journal: Some(Arc::clone(journal_arc)),
+                checkpoint_manager: None, // Will be set after creation
+            });
+
+            let manager = CheckpointManager::start(Arc::clone(journal_arc), db_arc, config);
+
+            Some(Arc::new(manager))
         } else {
             None
         };
@@ -321,6 +350,7 @@ impl ColumnFamilyDatabase {
             column_families: Arc::new(RwLock::new(column_families)),
             header,
             wal_journal,
+            checkpoint_manager,
         })
     }
 
@@ -369,6 +399,7 @@ impl ColumnFamilyDatabase {
         let state = Arc::new(ColumnFamilyState::new(name.clone(), segments));
 
         let cf_name = name.clone();
+        let cf_name_for_callback = cf_name.clone();
         let header_clone = self.header.clone();
         let header_backend_clone = self.header_backend.clone();
 
@@ -376,7 +407,7 @@ impl ColumnFamilyDatabase {
 
         let expansion_callback = Arc::new(move |requested_size: u64| -> io::Result<Segment> {
             Self::allocate_segment_internal(
-                &cf_name,
+                &cf_name_for_callback,
                 requested_size,
                 &header_clone,
                 &header_backend_clone,
@@ -399,13 +430,14 @@ impl ColumnFamilyDatabase {
         cfs.insert(name.clone(), state.clone());
 
         Ok(ColumnFamily {
-            name,
+            name: cf_name.clone(),
             state,
             pool: self.handle_pool.clone(),
             path: self.path.clone(),
             header: self.header.clone(),
             header_backend: self.header_backend.clone(),
             wal_journal: self.wal_journal.clone(),
+            checkpoint_manager: self.checkpoint_manager.clone(),
         })
     }
 
@@ -428,6 +460,7 @@ impl ColumnFamilyDatabase {
                 header: self.header.clone(),
                 header_backend: self.header_backend.clone(),
                 wal_journal: self.wal_journal.clone(),
+                checkpoint_manager: self.checkpoint_manager.clone(),
             }),
             None => Err(ColumnFamilyError::NotFound(name.to_string())),
         }
@@ -550,7 +583,8 @@ pub struct ColumnFamily {
     path: PathBuf,
     header: Arc<RwLock<MasterHeader>>,
     header_backend: Arc<FileBackend>,
-    wal_journal: Option<Arc<Mutex<WALJournal>>>,
+    wal_journal: Option<Arc<WALJournal>>,
+    checkpoint_manager: Option<Arc<CheckpointManager>>,
 }
 
 impl ColumnFamily {
@@ -579,8 +613,12 @@ impl ColumnFamily {
         let mut txn = db.begin_write()?;
 
         // Inject WAL context if enabled
-        if let Some(ref wal_journal) = self.wal_journal {
-            txn.set_wal_context(self.name.clone(), wal_journal.clone());
+        if let Some(wal_journal) = &self.wal_journal {
+            txn.set_wal_context(
+                self.name.clone(),
+                Arc::clone(wal_journal),
+                self.checkpoint_manager.as_ref().map(Arc::clone),
+            );
         }
 
         Ok(txn)
@@ -624,6 +662,16 @@ impl ColumnFamily {
 
 impl Drop for ColumnFamilyDatabase {
     fn drop(&mut self) {
+        // Shutdown checkpoint manager if it exists
+        if let Some(checkpoint_mgr) = self.checkpoint_manager.take() {
+            // Try to unwrap the Arc - if we're the last owner, we can shutdown gracefully
+            if let Ok(manager) = Arc::try_unwrap(checkpoint_mgr) {
+                let _ = manager.shutdown();
+            }
+            // If Arc::try_unwrap fails, other references exist and Drop on CheckpointManager
+            // will handle shutdown when they're dropped
+        }
+
         // Close the header backend to release the file lock
         let _ = self.header_backend.close();
     }
