@@ -1,5 +1,5 @@
-use redb::column_family::ColumnFamilyDatabase;
-use redb::{ReadableTableMetadata, TableDefinition};
+use manifold::column_family::ColumnFamilyDatabase;
+use manifold::{ReadableTableMetadata, TableDefinition};
 use std::error::Error;
 use std::sync::Arc;
 use std::thread;

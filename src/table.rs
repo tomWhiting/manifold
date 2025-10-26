@@ -380,7 +380,7 @@ pub trait ReadableTable<K: Key + 'static, V: Value + 'static>: ReadableTableMeta
     ///
     /// Usage:
     /// ```rust
-    /// use redb::*;
+    /// use manifold::*;
     /// # use tempfile::NamedTempFile;
     /// const TABLE: TableDefinition<&str, u64> = TableDefinition::new("my_data");
     ///

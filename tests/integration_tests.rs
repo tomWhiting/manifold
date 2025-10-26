@@ -1,13 +1,13 @@
 use rand::Rng;
 use rand::prelude::SliceRandom;
-use redb::backends::FileBackend;
-use redb::{
+use manifold::backends::FileBackend;
+use manifold::{
     AccessGuard, Builder, CompactionError, Database, Durability, Key, MultimapRange,
     MultimapTableDefinition, MultimapValue, Range, ReadableDatabase, ReadableTable,
     ReadableTableMetadata, SetDurabilityError, StorageBackend, TableDefinition, TableStats,
     TransactionError, Value,
 };
-use redb::{DatabaseError, ReadableMultimapTable, SavepointError, StorageError, TableError};
+use manifold::{DatabaseError, ReadableMultimapTable, SavepointError, StorageError, TableError};
 use std::borrow::Borrow;
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -1928,22 +1928,22 @@ impl<K: Key + 'static, V: Value + 'static, T: ReadableTable<K, V>> ReadableTable
     fn get<'a>(
         &self,
         key: impl Borrow<K::SelfType<'a>>,
-    ) -> redb::Result<Option<AccessGuard<'_, V>>> {
+    ) -> manifold::Result<Option<AccessGuard<'_, V>>> {
         self.inner.get(key)
     }
 
-    fn range<'a, KR>(&self, range: impl RangeBounds<KR> + 'a) -> redb::Result<Range<'_, K, V>>
+    fn range<'a, KR>(&self, range: impl RangeBounds<KR> + 'a) -> manifold::Result<Range<'_, K, V>>
     where
         KR: Borrow<K::SelfType<'a>> + 'a,
     {
         self.inner.range(range)
     }
 
-    fn first(&self) -> redb::Result<Option<(AccessGuard<'_, K>, AccessGuard<'_, V>)>> {
+    fn first(&self) -> manifold::Result<Option<(AccessGuard<'_, K>, AccessGuard<'_, V>)>> {
         self.inner.first()
     }
 
-    fn last(&self) -> redb::Result<Option<(AccessGuard<'_, K>, AccessGuard<'_, V>)>> {
+    fn last(&self) -> manifold::Result<Option<(AccessGuard<'_, K>, AccessGuard<'_, V>)>> {
         self.inner.last()
     }
 }
@@ -1951,11 +1951,11 @@ impl<K: Key + 'static, V: Value + 'static, T: ReadableTable<K, V>> ReadableTable
 impl<K: Key + 'static, V: Value + 'static, T: ReadableTable<K, V>> ReadableTableMetadata
     for DelegatingTable<K, V, T>
 {
-    fn stats(&self) -> redb::Result<TableStats> {
+    fn stats(&self) -> manifold::Result<TableStats> {
         self.inner.stats()
     }
 
-    fn len(&self) -> redb::Result<u64> {
+    fn len(&self) -> manifold::Result<u64> {
         self.inner.len()
     }
 }
@@ -1969,14 +1969,14 @@ struct DelegatingMultimapTable<K: Key + 'static, V: Key + 'static, T: ReadableMu
 impl<K: Key + 'static, V: Key + 'static, T: ReadableMultimapTable<K, V>> ReadableMultimapTable<K, V>
     for DelegatingMultimapTable<K, V, T>
 {
-    fn get<'a>(&self, key: impl Borrow<K::SelfType<'a>>) -> redb::Result<MultimapValue<'_, V>> {
+    fn get<'a>(&self, key: impl Borrow<K::SelfType<'a>>) -> manifold::Result<MultimapValue<'_, V>> {
         self.inner.get(key)
     }
 
     fn range<'a, KR>(
         &self,
         range: impl RangeBounds<KR> + 'a,
-    ) -> redb::Result<MultimapRange<'_, K, V>>
+    ) -> manifold::Result<MultimapRange<'_, K, V>>
     where
         KR: Borrow<K::SelfType<'a>> + 'a,
     {
@@ -1987,11 +1987,11 @@ impl<K: Key + 'static, V: Key + 'static, T: ReadableMultimapTable<K, V>> Readabl
 impl<K: Key + 'static, V: Key + 'static, T: ReadableMultimapTable<K, V>> ReadableTableMetadata
     for DelegatingMultimapTable<K, V, T>
 {
-    fn stats(&self) -> redb::Result<TableStats> {
+    fn stats(&self) -> manifold::Result<TableStats> {
         self.inner.stats()
     }
 
-    fn len(&self) -> redb::Result<u64> {
+    fn len(&self) -> manifold::Result<u64> {
         self.inner.len()
     }
 }

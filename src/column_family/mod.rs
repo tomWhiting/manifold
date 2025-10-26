@@ -22,7 +22,7 @@
 //! # Example Usage
 //!
 //! ```ignore
-//! use redb::column_family::ColumnFamilyDatabase;
+//! use manifold::column_family::ColumnFamilyDatabase;
 //!
 //! let db = ColumnFamilyDatabase::open("my_collection.manifold")?;
 //! db.create_column_family("users", Some(1024 * 1024 * 1024))?; // 1GB partition

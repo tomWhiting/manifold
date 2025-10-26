@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use redb::{
+use manifold::{
     AccessGuard, Database, Durability, Error, MultimapTable, MultimapTableDefinition,
     MultimapValue, ReadableDatabase, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, Savepoint,
     StorageBackend, Table, TableDefinition, WriteTransaction,
@@ -17,7 +17,7 @@ use tempfile::NamedTempFile;
 mod common;
 use crate::FuzzerSavepoint::{Ephemeral, NotYetDurablePersistent, Persistent};
 use common::*;
-use redb::backends::FileBackend;
+use manifold::backends::FileBackend;
 
 // These slow down the fuzzer, so don't create too many
 const MAX_PERSISTENT_SAVEPOINTS: usize = 10;

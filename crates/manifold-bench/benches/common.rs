@@ -1,5 +1,5 @@
 use heed::{CompactionOption, EnvFlags, EnvInfo, FlagSetMode};
-use redb::{AccessGuard, Durability, ReadableDatabase, ReadableTableMetadata, TableDefinition};
+use manifold::{AccessGuard, Durability, ReadableDatabase, ReadableTableMetadata, TableDefinition};
 use rocksdb::{
     Direction, IteratorMode, OptimisticTransactionDB, OptimisticTransactionOptions, WriteOptions,
 };
@@ -477,12 +477,12 @@ pub trait BenchIterator {
 }
 
 pub struct RedbBenchDatabase<'a> {
-    db: &'a mut redb::Database,
+    db: &'a mut manifold::Database,
 }
 
 impl<'a> RedbBenchDatabase<'a> {
     #[allow(dead_code)]
-    pub fn new(db: &'a mut redb::Database) -> Self {
+    pub fn new(db: &'a mut manifold::Database) -> Self {
         RedbBenchDatabase { db }
     }
 }
@@ -511,7 +511,7 @@ impl BenchDatabase for RedbBenchDatabase<'_> {
 }
 
 pub struct RedbBenchDatabaseConnection<'a> {
-    db: &'a redb::Database,
+    db: &'a manifold::Database,
     sync: bool,
 }
 
@@ -545,7 +545,7 @@ impl BenchDatabaseConnection for RedbBenchDatabaseConnection<'_> {
 }
 
 pub struct RedbBenchReadTransaction {
-    txn: redb::ReadTransaction,
+    txn: manifold::ReadTransaction,
 }
 
 impl BenchReadTransaction for RedbBenchReadTransaction {
@@ -561,7 +561,7 @@ impl BenchReadTransaction for RedbBenchReadTransaction {
 }
 
 pub struct RedbBenchReader {
-    table: redb::ReadOnlyTable<&'static [u8], &'static [u8]>,
+    table: manifold::ReadOnlyTable<&'static [u8], &'static [u8]>,
 }
 
 impl BenchReader for RedbBenchReader {
@@ -589,7 +589,7 @@ impl BenchReader for RedbBenchReader {
 }
 
 pub struct RedbBenchIterator<'a> {
-    iter: redb::Range<'a, &'static [u8], &'static [u8]>,
+    iter: manifold::Range<'a, &'static [u8], &'static [u8]>,
 }
 
 impl BenchIterator for RedbBenchIterator<'_> {
@@ -623,7 +623,7 @@ impl AsRef<[u8]> for RedbAccessGuard<'_> {
 }
 
 pub struct RedbBenchWriteTransaction {
-    txn: redb::WriteTransaction,
+    txn: manifold::WriteTransaction,
 }
 
 impl BenchWriteTransaction for RedbBenchWriteTransaction {
@@ -643,7 +643,7 @@ impl BenchWriteTransaction for RedbBenchWriteTransaction {
 }
 
 pub struct RedbBenchInserter<'txn> {
-    table: redb::Table<'txn, &'static [u8], &'static [u8]>,
+    table: manifold::Table<'txn, &'static [u8], &'static [u8]>,
 }
 
 impl BenchInserter for RedbBenchInserter<'_> {

@@ -26,8 +26,8 @@ use std::sync::{Arc, RwLock};
 /// # Example
 ///
 /// ```ignore
-/// use redb::column_family::{PartitionedStorageBackend, Segment};
-/// use redb::backends::FileBackend;
+/// use manifold::column_family::{PartitionedStorageBackend, Segment};
+/// use manifold::backends::FileBackend;
 /// use std::sync::Arc;
 ///
 /// let file_backend = Arc::new(FileBackend::new(file)?);

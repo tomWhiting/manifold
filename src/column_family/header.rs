@@ -4,7 +4,7 @@ use std::io;
 ///
 /// The sequence includes DOS/Unix line ending detection bytes (0x1A, 0x0A) to help
 /// detect text-mode corruption.
-pub const MAGIC_NUMBER: [u8; 9] = *b"redb-cf\x1A\x0A";
+pub const MAGIC_NUMBER: [u8; 9] = *b"mnfd-cf\x1A\x0A";
 
 /// Current format version for the master header.
 /// Version 2 introduces segmented column families with free space tracking.

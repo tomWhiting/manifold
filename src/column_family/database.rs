@@ -76,9 +76,9 @@ impl From<io::Error> for ColumnFamilyError {
 /// # Example
 ///
 /// ```ignore
-/// use redb::column_family::ColumnFamilyDatabase;
+/// use manifold::column_family::ColumnFamilyDatabase;
 ///
-/// let db = ColumnFamilyDatabase::open("my_database.redb")?;
+/// let db = ColumnFamilyDatabase::open("my_database.manifold")?;
 /// db.create_column_family("users", None)?;
 /// db.create_column_family("products", None)?;
 ///

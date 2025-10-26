@@ -1,4 +1,4 @@
-use redb::{
+use manifold::{
     Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable,
     ReadableTableMetadata, TableError,
 };

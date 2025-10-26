@@ -17,7 +17,7 @@ use redb::{Database, Error, ReadableDatabase, TableDefinition};
 const TABLE: TableDefinition<&str, u64> = TableDefinition::new("my_data");
 
 fn main() -> Result<(), Error> {
-    let db = Database::create("my_db.redb")?;
+    let db = Database::create("my_db.manifold")?;
     let write_txn = db.begin_write()?;
     {
         let mut table = write_txn.open_table(TABLE)?;

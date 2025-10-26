@@ -1,8 +1,8 @@
 use rand::random;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use redb::DatabaseError;
-use redb::backends::InMemoryBackend;
-use redb::{
+use manifold::DatabaseError;
+use manifold::backends::InMemoryBackend;
+use manifold::{
     Database, Key, Legacy, MultimapTableDefinition, MultimapTableHandle, Range, ReadOnlyDatabase,
     ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition, TableError,
     TableHandle, TypeName, Value,
@@ -434,7 +434,7 @@ fn list_tables() {
 // Test that these signatures compile
 fn tuple_type_function_lifetime() {
     #[allow(dead_code)]
-    fn insert_inferred_lifetime(table: &mut redb::Table<(&str, u8), u64>) {
+    fn insert_inferred_lifetime(table: &mut manifold::Table<(&str, u8), u64>) {
         table
             .insert(&(String::from("hello").as_str(), 8), &1)
             .unwrap();
@@ -442,7 +442,7 @@ fn tuple_type_function_lifetime() {
 
     #[allow(dead_code)]
     #[allow(clippy::needless_lifetimes)]
-    fn insert_explicit_lifetime<'a>(table: &mut redb::Table<(&'a str, u8), u64>) {
+    fn insert_explicit_lifetime<'a>(table: &mut manifold::Table<(&'a str, u8), u64>) {
         table
             .insert(&(String::from("hello").as_str(), 8), &1)
             .unwrap();

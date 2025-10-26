@@ -1,6 +1,6 @@
 [package]
-name = "redb"
-description = "Rust Embedded DataBase"
+name = "manifold"
+description = "Manifold Embedded Database"
 readme = "README.md"
 version = "3.1.0"
 exclude = ["fuzz/"]
@@ -12,15 +12,15 @@ repository.workspace = true
 authors.workspace = true
 
 [workspace]
-members = [".", "crates/redb-bench", "crates/redb-derive", "crates/redb-python"]
-default-members = [".", "crates/redb-derive", "crates/redb-python"]
+members = [".", "crates/manifold-bench", "crates/manifold-derive", "crates/manifold-python"]
+default-members = [".", "crates/manifold-derive", "crates/manifold-python"]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
-homepage = "https://www.redb.org"
-repository = "https://github.com/cberner/redb"
+homepage = "https://github.com/hyperbasedev/manifold"
+repository = "https://github.com/hyperbasedev/manifold"
 authors = ["Christopher Berner <me@cberner.com>"]
 
 [dependencies]

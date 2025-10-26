@@ -358,7 +358,7 @@ pub trait ReadableDatabase {
 /// Basic usage:
 ///
 /// ```rust
-/// use redb::*;
+/// use manifold::*;
 /// # use tempfile::NamedTempFile;
 /// const TABLE: TableDefinition<u64, u64> = TableDefinition::new("my_data");
 ///
@@ -471,7 +471,7 @@ impl ReadOnlyDatabase {
 /// Basic usage:
 ///
 /// ```rust
-/// use redb::*;
+/// use manifold::*;
 /// # use tempfile::NamedTempFile;
 /// const TABLE: TableDefinition<u64, u64> = TableDefinition::new("my_data");
 ///

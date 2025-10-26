@@ -34,7 +34,7 @@
 //! # Example
 //!
 //! ```
-//! use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
+//! use manifold::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 //!
 //! const TABLE: TableDefinition<&str, u64> = TableDefinition::new("my_data");
 //!

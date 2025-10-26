@@ -1,5 +1,5 @@
 [package]
-name = "redb-bench"
+name = "manifold-bench"
 version = "0.0.0"
 publish = false
 edition.workspace = true
@@ -11,7 +11,7 @@ authors.workspace = true
 
 # Common test/bench dependencies
 [dev-dependencies]
-redb = { path = "../.." }
+manifold = { path = "../.." }
 rand = "0.9"
 tempfile = "3.5.0"
 walkdir = "2.5.0"
@@ -51,7 +51,7 @@ name = "lmdb_benchmark"
 harness = false
 
 [[bench]]
-name = "redb_benchmark"
+name = "manifold_benchmark"
 harness = false
 
 [[bench]]
