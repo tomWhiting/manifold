@@ -29,10 +29,10 @@ pub(crate) struct WALJournal {
 /// Header structure for the WAL file.
 #[derive(Debug, Clone)]
 pub(crate) struct WALHeader {
-    magic: [u8; 8],
-    version: u8,
-    oldest_seq: u64,
-    latest_seq: u64,
+    pub(crate) magic: [u8; 8],
+    pub(crate) version: u8,
+    pub(crate) oldest_seq: u64,
+    pub(crate) latest_seq: u64,
 }
 
 impl WALHeader {
@@ -260,7 +260,6 @@ impl WALJournal {
     }
 
     /// Reads the WAL header.
-    #[cfg(test)]
     pub(crate) fn read_header(&self) -> io::Result<WALHeader> {
         let mut file = self.file.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;

@@ -25,10 +25,12 @@ pub(crate) struct WALEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WALTransactionPayload {
     /// Root of the user data B-tree after this transaction.
-    pub(crate) user_root: Option<(PageNumber, Checksum)>,
+    /// Stored as (PageNumber, Checksum, length) to fully reconstruct BtreeHeader.
+    pub(crate) user_root: Option<(PageNumber, Checksum, u64)>,
 
     /// Root of the system B-tree after this transaction.
-    pub(crate) system_root: Option<(PageNumber, Checksum)>,
+    /// Stored as (PageNumber, Checksum, length) to fully reconstruct BtreeHeader.
+    pub(crate) system_root: Option<(PageNumber, Checksum, u64)>,
 
     /// Pages freed by this transaction.
     pub(crate) freed_pages: Vec<PageNumber>,
@@ -160,8 +162,8 @@ impl WALTransactionPayload {
         durability: Durability,
     ) -> Self {
         Self {
-            user_root: user_root.map(|h| (h.root, h.checksum)),
-            system_root: system_root.map(|h| (h.root, h.checksum)),
+            user_root: user_root.map(|h| (h.root, h.checksum, h.length)),
+            system_root: system_root.map(|h| (h.root, h.checksum, h.length)),
             freed_pages,
             allocated_pages,
             durability,
@@ -172,9 +174,9 @@ impl WALTransactionPayload {
     ///
     /// Format:
     /// - user_root_present: u8 (1 = present, 0 = None)
-    /// - user_root: PageNumber (8 bytes) + Checksum (16 bytes) if present
+    /// - user_root: PageNumber (8 bytes) + Checksum (16 bytes) + length (8 bytes) if present
     /// - system_root_present: u8
-    /// - system_root: PageNumber + Checksum if present
+    /// - system_root: PageNumber + Checksum + length if present
     /// - freed_pages_count: u32 (4 bytes)
     /// - freed_pages: [PageNumber; count] (8 bytes each)
     /// - allocated_pages_count: u32 (4 bytes)
@@ -182,19 +184,21 @@ impl WALTransactionPayload {
     /// - durability: u8 (1 byte)
     fn serialize_into(&self, buf: &mut Vec<u8>) {
         // User root
-        if let Some((page_num, checksum)) = self.user_root {
+        if let Some((page_num, checksum, length)) = self.user_root {
             buf.push(1);
             buf.extend_from_slice(&page_num.to_le_bytes());
             buf.extend_from_slice(&checksum.to_le_bytes());
+            buf.extend_from_slice(&length.to_le_bytes());
         } else {
             buf.push(0);
         }
 
         // System root
-        if let Some((page_num, checksum)) = self.system_root {
+        if let Some((page_num, checksum, length)) = self.system_root {
             buf.push(1);
             buf.extend_from_slice(&page_num.to_le_bytes());
             buf.extend_from_slice(&checksum.to_le_bytes());
+            buf.extend_from_slice(&length.to_le_bytes());
         } else {
             buf.push(0);
         }
@@ -234,7 +238,7 @@ impl WALTransactionPayload {
         }
         let user_root = if data[offset] == 1 {
             offset += 1;
-            if data.len() < offset + 8 + 16 {
+            if data.len() < offset + 8 + 16 + 8 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "truncated user_root",
@@ -244,7 +248,9 @@ impl WALTransactionPayload {
             offset += 8;
             let checksum = u128::from_le_bytes(data[offset..offset + 16].try_into().unwrap());
             offset += 16;
-            Some((page_num, checksum))
+            let length = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+            offset += 8;
+            Some((page_num, checksum, length))
         } else {
             offset += 1;
             None
@@ -259,7 +265,7 @@ impl WALTransactionPayload {
         }
         let system_root = if data[offset] == 1 {
             offset += 1;
-            if data.len() < offset + 8 + 16 {
+            if data.len() < offset + 8 + 16 + 8 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "truncated system_root",
@@ -269,7 +275,9 @@ impl WALTransactionPayload {
             offset += 8;
             let checksum = u128::from_le_bytes(data[offset..offset + 16].try_into().unwrap());
             offset += 16;
-            Some((page_num, checksum))
+            let length = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+            offset += 8;
+            Some((page_num, checksum, length))
         } else {
             offset += 1;
             None
@@ -362,7 +370,7 @@ mod tests {
     #[test]
     fn test_entry_serialization_round_trip() {
         let payload = WALTransactionPayload {
-            user_root: Some((PageNumber::new(0, 1, 0), 0x1234567890abcdef)),
+            user_root: Some((PageNumber::new(0, 1, 0), 0x1234567890abcdef, 100)),
             system_root: None,
             freed_pages: vec![PageNumber::new(0, 2, 0), PageNumber::new(0, 3, 0)],
             allocated_pages: vec![PageNumber::new(0, 4, 0)],
@@ -389,8 +397,8 @@ mod tests {
     #[test]
     fn test_payload_serialization_round_trip() {
         let payload = WALTransactionPayload {
-            user_root: Some((PageNumber::new(1, 10, 2), 0xdeadbeef)),
-            system_root: Some((PageNumber::new(2, 20, 1), 0xcafebabe)),
+            user_root: Some((PageNumber::new(1, 10, 2), 0xdeadbeef, 200)),
+            system_root: Some((PageNumber::new(2, 20, 1), 0xcafebabe, 300)),
             freed_pages: vec![],
             allocated_pages: vec![
                 PageNumber::new(0, 5, 0),

@@ -9,9 +9,10 @@
 pub mod config;
 pub mod entry;
 pub mod journal;
+pub mod recovery;
 
-// Checkpoint and recovery modules will be added in subsequent phases
+// Checkpoint module will be added in subsequent phase
 // pub mod checkpoint;
-// pub mod recovery;
 
 pub use self::config::WALConfig;
+pub(crate) use self::recovery::WALRecovery;

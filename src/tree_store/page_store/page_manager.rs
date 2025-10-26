@@ -703,6 +703,28 @@ impl TransactionalMemory {
         Ok(())
     }
 
+    /// Applies a WAL transaction directly to the database state.
+    ///
+    /// This is used during WAL recovery and checkpointing to restore transaction state
+    /// without going through the full WriteTransaction path.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - The roots point to valid B-tree structures
+    /// - The freed/allocated pages are consistent with the actual storage state
+    /// - This is called during recovery or checkpoint, not during normal operation
+    pub(crate) fn apply_wal_transaction(
+        &self,
+        data_root: Option<BtreeHeader>,
+        system_root: Option<BtreeHeader>,
+        transaction_id: TransactionId,
+    ) -> Result {
+        // Use non_durable_commit to apply the transaction state
+        // This updates the secondary slot with the new roots
+        self.non_durable_commit(data_root, system_root, transaction_id)
+    }
+
     pub(crate) fn rollback_uncommitted_writes(&self) -> Result {
         let result = self.rollback_uncommitted_writes_inner();
         if result.is_err() {

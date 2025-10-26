@@ -1418,8 +1418,8 @@ impl WriteTransaction {
             let system_root = self.system_tables.lock().unwrap().table_tree.get_root();
 
             let payload = WALTransactionPayload {
-                user_root: user_root.map(|h| (h.root, h.checksum)),
-                system_root: system_root.map(|h| (h.root, h.checksum)),
+                user_root: user_root.map(|h| (h.root, h.checksum, h.length)),
+                system_root: system_root.map(|h| (h.root, h.checksum, h.length)),
                 freed_pages: data_freed_clone,
                 allocated_pages: allocated_pages_vec,
                 durability: match self.durability {

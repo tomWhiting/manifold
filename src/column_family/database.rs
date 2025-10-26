@@ -199,7 +199,6 @@ impl ColumnFamilyDatabase {
 
         // Initialize WAL journal
         let wal_journal = if pool_size > 0 {
-            // For now, WAL is always enabled - will add builder flag in next iteration
             let wal_path = path.with_extension("wal");
             let journal = WALJournal::open(&wal_path)
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
