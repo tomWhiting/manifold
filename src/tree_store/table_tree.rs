@@ -245,6 +245,11 @@ impl TableTreeMut<'_> {
         self.tree.set_root(root);
     }
 
+    /// Returns the current root of the table tree.
+    pub(crate) fn get_root(&self) -> Option<BtreeHeader> {
+        self.tree.get_root()
+    }
+
     #[cfg_attr(not(debug_assertions), expect(dead_code))]
     pub(crate) fn visit_all_pages<F>(&self, mut visitor: F) -> Result
     where

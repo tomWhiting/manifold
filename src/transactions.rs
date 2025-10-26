@@ -357,7 +357,7 @@ impl DatabaseStats {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum Durability {
     /// Commits with this durability level will not be persisted to disk unless followed by a
@@ -773,6 +773,9 @@ pub struct WriteTransaction {
     // Persistent savepoints created during this transaction
     created_persistent_savepoints: Mutex<HashSet<SavepointId>>,
     deleted_persistent_savepoints: Mutex<Vec<(SavepointId, TransactionId)>>,
+    // WAL integration for column families
+    wal_journal: Option<Arc<std::sync::Mutex<crate::column_family::wal::journal::WALJournal>>>,
+    cf_name: Option<String>,
 }
 
 impl WriteTransaction {
@@ -805,11 +808,23 @@ impl WriteTransaction {
             shrink_policy: ShrinkPolicy::Default,
             created_persistent_savepoints: Mutex::new(Default::default()),
             deleted_persistent_savepoints: Mutex::new(vec![]),
+            wal_journal: None,
+            cf_name: None,
         })
     }
 
     pub(crate) fn set_shrink_policy(&mut self, shrink_policy: ShrinkPolicy) {
         self.shrink_policy = shrink_policy;
+    }
+
+    /// Sets the WAL context for this transaction (used by column families).
+    pub(crate) fn set_wal_context(
+        &mut self,
+        cf_name: String,
+        wal_journal: Arc<std::sync::Mutex<crate::column_family::wal::journal::WALJournal>>,
+    ) {
+        self.cf_name = Some(cf_name);
+        self.wal_journal = Some(wal_journal);
     }
 
     pub(crate) fn pending_free_pages(&self) -> Result<bool> {
@@ -1388,17 +1403,61 @@ impl WriteTransaction {
         let (user_root, allocated_pages, data_freed) =
             self.tables.lock().unwrap().table_tree.flush_and_close()?;
 
+        // Clone data for WAL before storing
+        let data_freed_clone = data_freed.clone();
+        let allocated_pages_vec: Vec<_> = allocated_pages.iter().copied().collect();
+
         self.store_data_freed_pages(data_freed)?;
         self.store_allocated_pages(allocated_pages.into_iter().collect())?;
+
+        // Append to WAL if enabled (before making commit visible)
+        if let (Some(wal_journal), Some(cf_name)) = (&self.wal_journal, &self.cf_name) {
+            use crate::column_family::wal::entry::{WALEntry, WALTransactionPayload};
+
+            // Get system root using the new get_root() method
+            let system_root = self.system_tables.lock().unwrap().table_tree.get_root();
+
+            let payload = WALTransactionPayload {
+                user_root: user_root.map(|h| (h.root, h.checksum)),
+                system_root: system_root.map(|h| (h.root, h.checksum)),
+                freed_pages: data_freed_clone,
+                allocated_pages: allocated_pages_vec,
+                durability: match self.durability {
+                    InternalDurability::None => Durability::None,
+                    InternalDurability::Immediate => Durability::Immediate,
+                },
+            };
+
+            let mut entry = WALEntry::new(cf_name.clone(), self.transaction_id.raw_id(), payload);
+
+            let journal = wal_journal.lock().unwrap();
+            journal
+                .append(&mut entry)
+                .map_err(|e| CommitError::Storage(crate::StorageError::from(e)))?;
+            journal
+                .sync()
+                .map_err(|e| CommitError::Storage(crate::StorageError::from(e)))?;
+        }
 
         #[cfg(feature = "logging")]
         debug!(
             "Committing transaction id={:?} with durability={:?} two_phase={} quick_repair={}",
             self.transaction_id, self.durability, self.two_phase_commit, self.quick_repair
         );
+
+        // With WAL, we can use non_durable_commit even for Immediate durability
+        // because the WAL has been fsynced above
         match self.durability {
             InternalDurability::None => self.non_durable_commit(user_root)?,
-            InternalDurability::Immediate => self.durable_commit(user_root)?,
+            InternalDurability::Immediate => {
+                if self.wal_journal.is_some() {
+                    // WAL already fsynced, just make changes visible
+                    self.non_durable_commit(user_root)?
+                } else {
+                    // No WAL, use traditional durable commit
+                    self.durable_commit(user_root)?
+                }
+            }
         }
 
         for (savepoint, transaction) in self.deleted_persistent_savepoints.lock().unwrap().iter() {

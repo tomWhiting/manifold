@@ -69,3 +69,7 @@ harness = false
 [[bench]]
 name = "column_family_benchmark"
 harness = false
+
+[[bench]]
+name = "cf_write_isolation"
+harness = false

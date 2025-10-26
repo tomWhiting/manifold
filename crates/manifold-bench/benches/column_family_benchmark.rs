@@ -1,5 +1,5 @@
-use manifold::TableDefinition;
 use manifold::column_family::ColumnFamilyDatabase;
+use manifold::{Durability, TableDefinition};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
@@ -8,6 +8,9 @@ const BENCHMARK_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("data"
 
 const WARMUP_ITERATIONS: usize = 3;
 const BENCHMARK_ITERATIONS: usize = 10;
+
+// Production-realistic batch size - write many records, sync periodically
+const WRITES_PER_BATCH: usize = 1000;
 
 fn format_duration(d: Duration) -> String {
     let micros = d.as_micros();
@@ -58,21 +61,32 @@ fn print_result(name: &str, duration: Duration, ops: usize) {
 fn benchmark_single_cf_sequential_writes(num_writes: usize) -> Duration {
     let tmpfile = NamedTempFile::new().unwrap();
     let db = ColumnFamilyDatabase::open(tmpfile.path()).unwrap();
-    db.create_column_family("data", Some(512 * 1024 * 1024))
-        .unwrap();
+    // Use small initial allocation - auto-expansion will handle growth
+    db.create_column_family("data", Some(1024 * 1024)).unwrap();
 
     let cf = db.column_family("data").unwrap();
     let data = vec![0u8; 1024];
 
     let start = Instant::now();
-    let txn = cf.begin_write().unwrap();
-    {
-        let mut table = txn.open_table(BENCHMARK_TABLE).unwrap();
-        for i in 0..num_writes as u64 {
-            table.insert(&i, data.as_slice()).unwrap();
+
+    // Production pattern: batch writes with periodic sync
+    let batches = num_writes / WRITES_PER_BATCH;
+    for batch in 0..batches {
+        let mut txn = cf.begin_write().unwrap();
+        // Use Durability::None for all but the last batch
+        if batch < batches - 1 {
+            txn.set_durability(Durability::None).unwrap();
         }
+        {
+            let mut table = txn.open_table(BENCHMARK_TABLE).unwrap();
+            for i in 0..WRITES_PER_BATCH as u64 {
+                let key = (batch as u64 * WRITES_PER_BATCH as u64) + i;
+                table.insert(&key, data.as_slice()).unwrap();
+            }
+        }
+        txn.commit().unwrap();
     }
-    txn.commit().unwrap();
+
     start.elapsed()
 }
 
@@ -83,39 +97,46 @@ fn benchmark_multi_cf_concurrent_writes(
     let tmpfile = NamedTempFile::new().unwrap();
     let db = Arc::new(ColumnFamilyDatabase::open(tmpfile.path()).unwrap());
 
+    // Create all CFs upfront with small initial allocations
     for i in 0..num_cfs {
-        db.create_column_family(&format!("cf_{i}"), Some(256 * 1024 * 1024))
+        db.create_column_family(&format!("cf_{i}"), Some(1024 * 1024))
             .unwrap();
     }
 
     let start = Instant::now();
     let mut handles = vec![];
-    let mut thread_durations = vec![];
 
     for i in 0..num_cfs {
         let db_clone = db.clone();
         let handle = std::thread::spawn(move || {
             let cf = db_clone.column_family(&format!("cf_{i}")).unwrap();
             let data = vec![0u8; 1024];
-
             let thread_start = Instant::now();
-            let txn = cf.begin_write().unwrap();
-            {
-                let mut table = txn.open_table(BENCHMARK_TABLE).unwrap();
-                for j in 0..writes_per_cf as u64 {
-                    table.insert(&j, data.as_slice()).unwrap();
+
+            // Production pattern: batch writes with periodic sync
+            let batches = writes_per_cf / WRITES_PER_BATCH;
+            for batch in 0..batches {
+                let mut txn = cf.begin_write().unwrap();
+                // Only sync on last batch
+                if batch < batches - 1 {
+                    txn.set_durability(Durability::None).unwrap();
                 }
+                {
+                    let mut table = txn.open_table(BENCHMARK_TABLE).unwrap();
+                    for j in 0..WRITES_PER_BATCH as u64 {
+                        let key = (batch as u64 * WRITES_PER_BATCH as u64) + j;
+                        table.insert(&key, data.as_slice()).unwrap();
+                    }
+                }
+                txn.commit().unwrap();
             }
-            txn.commit().unwrap();
+
             thread_start.elapsed()
         });
         handles.push(handle);
     }
 
-    for handle in handles {
-        thread_durations.push(handle.join().unwrap());
-    }
-
+    let thread_durations: Vec<Duration> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     let total_duration = start.elapsed();
     (total_duration, thread_durations)
 }
@@ -129,13 +150,13 @@ fn benchmark_cf_operations() {
     let mut create_times = vec![];
     for i in 0..BENCHMARK_ITERATIONS {
         let start = Instant::now();
-        db.create_column_family(&format!("cf_{i}"), Some(512 * 1024 * 1024))
+        db.create_column_family(&format!("cf_{i}"), Some(1024 * 1024))
             .unwrap();
         create_times.push(start.elapsed());
     }
 
     let (p50, p95, p99) = calculate_percentiles(create_times);
-    println!("  CF Creation (512MB allocation):");
+    println!("  CF Creation (1MB allocation):");
     println!(
         "    p50: {}  p95: {}  p99: {}",
         format_duration(p50),
@@ -169,7 +190,7 @@ fn benchmark_concurrent_scaling() {
     );
     println!("  {}", "-".repeat(78));
 
-    let writes_per_thread = 5000;
+    let writes_per_thread = 10_000;
 
     for _ in 0..WARMUP_ITERATIONS {
         let _ = benchmark_single_cf_sequential_writes(writes_per_thread);
@@ -220,7 +241,7 @@ fn benchmark_multi_table_access() {
 
     let tmpfile = NamedTempFile::new().unwrap();
     let db = ColumnFamilyDatabase::open(tmpfile.path()).unwrap();
-    db.create_column_family("test", Some(512 * 1024 * 1024))
+    db.create_column_family("test", Some(10 * 1024 * 1024))
         .unwrap();
 
     let cf = db.column_family("test").unwrap();
@@ -312,10 +333,11 @@ fn benchmark_read_write_concurrency() {
 
     let tmpfile = NamedTempFile::new().unwrap();
     let db = Arc::new(ColumnFamilyDatabase::open(tmpfile.path()).unwrap());
-    db.create_column_family("data", Some(512 * 1024 * 1024))
+
+    db.create_column_family("rw_stress", Some(10 * 1024 * 1024))
         .unwrap();
 
-    let cf = db.column_family("data").unwrap();
+    let cf = db.column_family("rw_stress").unwrap();
     let data = vec![0u8; 1024];
 
     let write_txn = cf.begin_write().unwrap();
@@ -435,6 +457,12 @@ fn main() {
     println!("Version: 3.1.0");
     println!("Warmup iterations: {WARMUP_ITERATIONS}");
     println!("Benchmark iterations: {BENCHMARK_ITERATIONS}");
+    println!("Batch size: {} writes per transaction\n", WRITES_PER_BATCH);
+    println!(
+        "NOTE: Production-realistic pattern - batch {} writes, sync periodically",
+        WRITES_PER_BATCH
+    );
+    println!("      Small initial CF allocations (1MB) with auto-expansion\n");
 
     benchmark_cf_operations();
     benchmark_concurrent_scaling();

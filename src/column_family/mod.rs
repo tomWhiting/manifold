@@ -47,10 +47,18 @@
 //! });
 //! ```
 
+pub(crate) mod builder;
 pub(crate) mod database;
+pub(crate) mod file_handle_pool;
 pub(crate) mod header;
 pub(crate) mod partitioned_backend;
+pub(crate) mod state;
+pub(crate) mod unlocked_backend;
+pub(crate) mod wal;
 
+pub use builder::ColumnFamilyDatabaseBuilder;
 pub use database::{ColumnFamily, ColumnFamilyDatabase, ColumnFamilyError};
+pub use file_handle_pool::FileHandlePool;
 pub use header::{ColumnFamilyMetadata, FORMAT_VERSION, MAGIC_NUMBER, MasterHeader};
 pub use partitioned_backend::PartitionedStorageBackend;
+pub use wal::WALConfig;

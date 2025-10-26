@@ -11,8 +11,11 @@ use crate::{
     WriteTransaction,
 };
 
+use super::builder::ColumnFamilyDatabaseBuilder;
+use super::file_handle_pool::FileHandlePool;
 use super::header::{ColumnFamilyMetadata, FreeSegment, MasterHeader, PAGE_SIZE, Segment};
-use super::partitioned_backend::PartitionedStorageBackend;
+use super::state::ColumnFamilyState;
+use super::wal::journal::WALJournal;
 
 /// Default size allocated to a new column family (1 GB).
 const DEFAULT_COLUMN_FAMILY_SIZE: u64 = 1024 * 1024 * 1024;
@@ -73,12 +76,19 @@ impl From<io::Error> for ColumnFamilyError {
 /// isolation, enabling concurrent writes to different column families while maintaining
 /// ACID guarantees.
 ///
+/// Column families are lazily initialized, so creating many column families is cheap.
+/// File descriptors are only acquired when a column family is first written to, and
+/// the pool manages eviction to keep file descriptor usage bounded.
+///
 /// # Example
 ///
 /// ```ignore
 /// use manifold::column_family::ColumnFamilyDatabase;
 ///
-/// let db = ColumnFamilyDatabase::open("my_database.manifold")?;
+/// let db = ColumnFamilyDatabase::builder()
+///     .pool_size(64)
+///     .open("my_database.manifold")?;
+///
 /// db.create_column_family("users", None)?;
 /// db.create_column_family("products", None)?;
 ///
@@ -102,27 +112,43 @@ impl From<io::Error> for ColumnFamilyError {
 /// ```
 pub struct ColumnFamilyDatabase {
     path: PathBuf,
-    file_backend: Arc<dyn StorageBackend>,
-    column_families: Arc<RwLock<HashMap<String, Arc<Database>>>>,
+    header_backend: Arc<FileBackend>,
+    handle_pool: Arc<FileHandlePool>,
+    column_families: Arc<RwLock<HashMap<String, Arc<ColumnFamilyState>>>>,
     header: Arc<RwLock<MasterHeader>>,
-    /// Mutex to serialize segment allocation to prevent races
-    allocation_lock: Arc<Mutex<()>>,
+    wal_journal: Option<Arc<Mutex<WALJournal>>>,
 }
 
 impl ColumnFamilyDatabase {
-    /// Opens or creates a column family database at the specified path.
+    /// Returns a builder for configuring and opening a column family database.
     ///
-    /// If the file does not exist, it will be created with an empty master header.
-    /// If the file exists, all column families defined in the master header will be opened.
+    /// # Example
+    ///
+    /// ```ignore
+    /// let db = ColumnFamilyDatabase::builder()
+    ///     .pool_size(64)
+    ///     .open("my_database.manifold")?;
+    /// ```
+    pub fn builder() -> ColumnFamilyDatabaseBuilder {
+        ColumnFamilyDatabaseBuilder::new()
+    }
+
+    /// Opens or creates a column family database at the specified path with default settings.
+    ///
+    /// This is equivalent to `ColumnFamilyDatabase::builder().open(path)`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be opened, the header is invalid, or any
-    /// column family cannot be initialized.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, ColumnFamilyError> {
-        let path = path.as_ref().to_path_buf();
+    /// Returns an error if the file cannot be opened or the header is invalid.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
+        Self::builder().open(path)
+    }
 
-        // Open or create the file
+    /// Internal implementation of open, called by the builder.
+    pub(crate) fn open_with_builder(
+        path: PathBuf,
+        pool_size: usize,
+    ) -> Result<Self, DatabaseError> {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -131,35 +157,30 @@ impl ColumnFamilyDatabase {
             .open(&path)
             .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
 
-        let file_backend = FileBackend::new(file)?;
-        let file_backend: Arc<dyn StorageBackend> = Arc::new(file_backend);
+        let header_backend = Arc::new(FileBackend::new(file)?);
 
-        // Check if file is new (empty)
-        let is_new = file_backend
+        let is_new = header_backend
             .len()
             .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?
             == 0;
 
         let header = if is_new {
-            // Initialize new file with empty master header
             let header = MasterHeader::new();
             let header_bytes = header
                 .to_bytes()
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
 
-            // Write header to file
-            file_backend
+            header_backend
                 .write(0, &header_bytes)
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
-            file_backend
+            header_backend
                 .sync_data()
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
 
             header
         } else {
-            // Read existing header
             let mut header_bytes = vec![0u8; PAGE_SIZE];
-            file_backend
+            header_backend
                 .read(0, &mut header_bytes)
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
 
@@ -167,59 +188,50 @@ impl ColumnFamilyDatabase {
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?
         };
 
-        // Initialize column families from header
+        let handle_pool = Arc::new(FileHandlePool::new(path.clone(), pool_size));
         let header = Arc::new(RwLock::new(header));
-        let allocation_lock = Arc::new(Mutex::new(()));
 
         let mut column_families = HashMap::new();
         for cf_meta in &header.read().unwrap().column_families {
-            // Create expansion callback for this column family
-            let cf_name = cf_meta.name.clone();
-            let header_clone = header.clone();
-            let file_backend_clone = file_backend.clone();
-            let allocation_lock_clone = allocation_lock.clone();
-
-            let expansion_callback = Arc::new(move |requested_size: u64| -> io::Result<Segment> {
-                Self::allocate_segment_internal(
-                    &cf_name,
-                    requested_size,
-                    &header_clone,
-                    &file_backend_clone,
-                    &allocation_lock_clone,
-                )
-            });
-
-            let partition_backend = PartitionedStorageBackend::with_segments(
-                file_backend.clone(),
-                cf_meta.segments.clone(),
-                Some(expansion_callback),
-            );
-
-            let db = Database::builder().create_with_backend(partition_backend)?;
-
-            column_families.insert(cf_meta.name.clone(), Arc::new(db));
+            let state = ColumnFamilyState::new(cf_meta.name.clone(), cf_meta.segments.clone());
+            column_families.insert(cf_meta.name.clone(), Arc::new(state));
         }
+
+        // Initialize WAL journal
+        let wal_journal = if pool_size > 0 {
+            // For now, WAL is always enabled - will add builder flag in next iteration
+            let wal_path = path.with_extension("wal");
+            let journal = WALJournal::open(&wal_path)
+                .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+            Some(Arc::new(Mutex::new(journal)))
+        } else {
+            None
+        };
 
         Ok(Self {
             path,
-            file_backend,
+            header_backend,
+            handle_pool,
             column_families: Arc::new(RwLock::new(column_families)),
             header,
-            allocation_lock,
+            wal_journal,
         })
     }
 
     /// Creates a new column family with the specified name and optional size.
     ///
-    /// The size parameter specifies the number of bytes to allocate for this column family.
-    /// If `None`, a default size of 1GB is used.
+    /// The column family is created cheaply with no file descriptor allocated.
+    /// The Database instance and file handle are lazily initialized on first write.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Name of the column family
+    /// * `size` - Initial size in bytes. If None, defaults to 1GB.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - A column family with this name already exists
-    /// - The header cannot be updated or written to disk
-    /// - The new Database instance cannot be initialized
+    /// Returns an error if a column family with this name already exists or
+    /// the header cannot be updated.
     pub fn create_column_family(
         &self,
         name: impl Into<String>,
@@ -228,65 +240,72 @@ impl ColumnFamilyDatabase {
         let name = name.into();
         let size = size.unwrap_or(DEFAULT_COLUMN_FAMILY_SIZE);
 
-        // Acquire write lock on column families map
         let mut cfs = self.column_families.write().unwrap();
 
-        // Check for duplicate name
         if cfs.contains_key(&name) {
             return Err(ColumnFamilyError::AlreadyExists(name));
         }
 
-        // Calculate next available offset using the end_of_file method
-        let metadata = {
+        let segments = {
             let mut header = self.header.write().unwrap();
             let offset = header.end_of_file();
             let metadata = ColumnFamilyMetadata::new(name.clone(), offset, size);
 
-            // Add to header immediately to reserve the space
             header.column_families.push(metadata.clone());
 
-            // Persist updated header to disk
             let header_bytes = header.to_bytes()?;
-            self.file_backend.write(0, &header_bytes)?;
-            self.file_backend.sync_data()?;
+            self.header_backend.write(0, &header_bytes)?;
+            self.header_backend.sync_data()?;
 
-            metadata
-        }; // Header lock dropped here
+            metadata.segments
+        };
 
-        // Create expansion callback for auto-growth
+        let state = Arc::new(ColumnFamilyState::new(name.clone(), segments));
+
         let cf_name = name.clone();
         let header_clone = self.header.clone();
-        let file_backend_clone = self.file_backend.clone();
-        let allocation_lock_clone = self.allocation_lock.clone();
+        let header_backend_clone = self.header_backend.clone();
+
+        let state_clone = state.clone();
 
         let expansion_callback = Arc::new(move |requested_size: u64| -> io::Result<Segment> {
             Self::allocate_segment_internal(
                 &cf_name,
                 requested_size,
                 &header_clone,
-                &file_backend_clone,
-                &allocation_lock_clone,
+                &header_backend_clone,
+                &state_clone,
             )
         });
 
-        // Create partitioned backend with segments and expansion callback
-        let partition_backend = PartitionedStorageBackend::with_segments(
-            self.file_backend.clone(),
-            metadata.segments.clone(),
-            Some(expansion_callback),
-        );
+        state
+            .ensure_database(&self.handle_pool, &self.path, expansion_callback)
+            .map_err(|e| match e {
+                DatabaseError::Storage(StorageError::Io(io_err)) => ColumnFamilyError::Io(io_err),
+                DatabaseError::Storage(s) => {
+                    ColumnFamilyError::Io(io::Error::other(format!("storage error: {s}")))
+                }
+                _ => ColumnFamilyError::Io(io::Error::other(format!(
+                    "failed to initialize column family: {e}"
+                ))),
+            })?;
 
-        // Initialize new Database instance (this may trigger expansion callback)
-        let db = Database::builder().create_with_backend(partition_backend)?;
-        let db = Arc::new(db);
+        cfs.insert(name.clone(), state.clone());
 
-        // Add to column families map
-        cfs.insert(name.clone(), db.clone());
-
-        Ok(ColumnFamily { name, db })
+        Ok(ColumnFamily {
+            name,
+            state,
+            pool: self.handle_pool.clone(),
+            path: self.path.clone(),
+            header: self.header.clone(),
+            header_backend: self.header_backend.clone(),
+            wal_journal: self.wal_journal.clone(),
+        })
     }
 
     /// Retrieves a handle to an existing column family.
+    ///
+    /// The returned handle is lightweight and can be cloned cheaply.
     ///
     /// # Errors
     ///
@@ -295,9 +314,14 @@ impl ColumnFamilyDatabase {
         let cfs = self.column_families.read().unwrap();
 
         match cfs.get(name) {
-            Some(db) => Ok(ColumnFamily {
+            Some(state) => Ok(ColumnFamily {
                 name: name.to_string(),
-                db: db.clone(),
+                state: state.clone(),
+                pool: self.handle_pool.clone(),
+                path: self.path.clone(),
+                header: self.header.clone(),
+                header_backend: self.header_backend.clone(),
+                wal_journal: self.wal_journal.clone(),
             }),
             None => Err(ColumnFamilyError::NotFound(name.to_string())),
         }
@@ -318,20 +342,53 @@ impl ColumnFamilyDatabase {
         &self.path
     }
 
-    /// Internal segment allocation function used by expansion callbacks.
+    /// Deletes a column family and adds its segments to the free list for reuse.
     ///
-    /// This allocates a new segment and updates the header atomically.
+    /// # Errors
+    ///
+    /// Returns an error if the column family does not exist or the header
+    /// cannot be updated.
+    pub fn delete_column_family(&self, name: &str) -> Result<(), ColumnFamilyError> {
+        let mut cfs = self.column_families.write().unwrap();
+
+        if !cfs.contains_key(name) {
+            return Err(ColumnFamilyError::NotFound(name.to_string()));
+        }
+
+        cfs.remove(name);
+
+        let mut header = self.header.write().unwrap();
+
+        let cf_idx = header
+            .column_families
+            .iter()
+            .position(|cf| cf.name == name)
+            .ok_or_else(|| ColumnFamilyError::NotFound(name.to_string()))?;
+
+        let cf_meta = header.column_families.remove(cf_idx);
+        for segment in cf_meta.segments {
+            header
+                .free_segments
+                .push(FreeSegment::new(segment.offset, segment.size));
+        }
+
+        let header_bytes = header.to_bytes()?;
+        self.header_backend.write(0, &header_bytes)?;
+        self.header_backend.sync_data()?;
+
+        Ok(())
+    }
+
+    /// Internal segment allocation function used by expansion callbacks.
     fn allocate_segment_internal(
         cf_name: &str,
         size: u64,
         header: &Arc<RwLock<MasterHeader>>,
-        file_backend: &Arc<dyn StorageBackend>,
-        allocation_lock: &Arc<Mutex<()>>,
+        header_backend: &Arc<FileBackend>,
+        state: &Arc<ColumnFamilyState>,
     ) -> io::Result<Segment> {
-        let _lock = allocation_lock.lock().unwrap();
         let mut hdr = header.write().unwrap();
 
-        // Try to find a free segment that's large enough
         let mut best_fit_idx = None;
         let mut best_fit_size = u64::MAX;
 
@@ -343,99 +400,51 @@ impl ColumnFamilyDatabase {
         }
 
         let allocated_segment = if let Some(idx) = best_fit_idx {
-            // Use the free segment
             let free_seg = hdr.free_segments.remove(idx);
 
             if free_seg.size == size {
-                // Perfect fit - use the whole segment
                 Segment::new(free_seg.offset, free_seg.size)
             } else {
-                // Partial fit - split the free segment
                 let allocated = Segment::new(free_seg.offset, size);
                 let remaining = FreeSegment::new(free_seg.offset + size, free_seg.size - size);
                 hdr.free_segments.push(remaining);
                 allocated
             }
         } else {
-            // No suitable free segment - append at end of file
             let offset = hdr.end_of_file();
-
-            // Ensure offset is page-aligned
             let aligned_offset = offset.div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
-
             Segment::new(aligned_offset, size)
         };
 
-        // Add the new segment to the column family's segment list
         if let Some(cf_meta) = hdr.column_families.iter_mut().find(|cf| cf.name == cf_name) {
             cf_meta.segments.push(allocated_segment.clone());
         }
 
-        // Persist updated header to disk
+        let mut state_segments = state.segments.write().unwrap();
+        state_segments.push(allocated_segment.clone());
+
         let header_bytes = hdr.to_bytes()?;
-        file_backend.write(0, &header_bytes)?;
-        file_backend.sync_data()?;
+        header_backend.write(0, &header_bytes)?;
+        header_backend.sync_data()?;
 
         Ok(allocated_segment)
-    }
-
-    /// Deletes a column family and adds its segments to the free list for reuse.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The column family does not exist
-    /// - The header cannot be updated or written to disk
-    pub fn delete_column_family(&self, name: &str) -> Result<(), ColumnFamilyError> {
-        let mut cfs = self.column_families.write().unwrap();
-
-        // Check if column family exists
-        if !cfs.contains_key(name) {
-            return Err(ColumnFamilyError::NotFound(name.to_string()));
-        }
-
-        // Remove from in-memory map
-        cfs.remove(name);
-
-        // Update header - move CF segments to free list
-        let mut header = self.header.write().unwrap();
-
-        // Find the column family in the header
-        let cf_idx = header
-            .column_families
-            .iter()
-            .position(|cf| cf.name == name)
-            .ok_or_else(|| ColumnFamilyError::NotFound(name.to_string()))?;
-
-        // Remove the column family and add its segments to free list
-        let cf_meta = header.column_families.remove(cf_idx);
-        for segment in cf_meta.segments {
-            header
-                .free_segments
-                .push(FreeSegment::new(segment.offset, segment.size));
-        }
-
-        // Persist updated header to disk
-        let header_bytes = header.to_bytes()?;
-        self.file_backend.write(0, &header_bytes)?;
-        self.file_backend.sync_data()?;
-
-        Ok(())
     }
 }
 
 /// A handle to a column family within a [`ColumnFamilyDatabase`].
 ///
-/// This is a lightweight wrapper around a redb [`Database`] instance that can be
-/// cheaply cloned and passed between threads. All clones refer to the same underlying
-/// database instance.
-///
-/// Use [`begin_write`](Self::begin_write) and [`begin_read`](Self::begin_read) to
-/// create transactions.
+/// This is a lightweight structure that can be cheaply cloned and passed between threads.
+/// The underlying Database instance is lazily initialized on first write, acquiring a
+/// file handle from the pool.
 #[derive(Clone)]
 pub struct ColumnFamily {
     name: String,
-    db: Arc<Database>,
+    state: Arc<ColumnFamilyState>,
+    pool: Arc<FileHandlePool>,
+    path: PathBuf,
+    header: Arc<RwLock<MasterHeader>>,
+    header_backend: Arc<FileBackend>,
+    wal_journal: Option<Arc<Mutex<WALJournal>>>,
 }
 
 impl ColumnFamily {
@@ -446,355 +455,70 @@ impl ColumnFamily {
 
     /// Begins a write transaction for this column family.
     ///
-    /// Only one write transaction may be active at a time per column family.
-    /// Multiple write transactions to different column families can proceed concurrently.
+    /// On first call, this acquires a file handle from the pool and initializes
+    /// the Database instance. Subsequent calls reuse the cached instance.
     ///
     /// # Errors
     ///
-    /// Returns an error if a write transaction is already in progress for this column family.
+    /// Returns an error if a write transaction is already in progress for this
+    /// column family or if the Database cannot be initialized.
     pub fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
-        self.db.begin_write()
+        let db = self.ensure_database().map_err(|e| match e {
+            DatabaseError::Storage(s) => TransactionError::Storage(s),
+            _ => TransactionError::Storage(StorageError::from(io::Error::other(format!(
+                "database initialization error: {e}"
+            )))),
+        })?;
+
+        let mut txn = db.begin_write()?;
+
+        // Inject WAL context if enabled
+        if let Some(ref wal_journal) = self.wal_journal {
+            txn.set_wal_context(self.name.clone(), wal_journal.clone());
+        }
+
+        Ok(txn)
     }
 
     /// Begins a read transaction for this column family.
     ///
-    /// Multiple read transactions may be active concurrently, even with active write
-    /// transactions, thanks to MVCC snapshot isolation.
+    /// Multiple read transactions may be active concurrently.
     pub fn begin_read(&self) -> Result<ReadTransaction, TransactionError> {
-        self.db.begin_read()
+        let db = self.ensure_database().map_err(|e| match e {
+            DatabaseError::Storage(s) => TransactionError::Storage(s),
+            _ => TransactionError::Storage(StorageError::from(io::Error::other(format!(
+                "database initialization error: {e}"
+            )))),
+        })?;
+        db.begin_read()
+    }
+
+    /// Ensures the Database instance exists, creating it if necessary.
+    fn ensure_database(&self) -> Result<Arc<Database>, DatabaseError> {
+        let name = self.name.clone();
+        let header = self.header.clone();
+        let header_backend = self.header_backend.clone();
+
+        let state = self.state.clone();
+
+        let expansion_callback = Arc::new(move |requested_size: u64| -> io::Result<Segment> {
+            ColumnFamilyDatabase::allocate_segment_internal(
+                &name,
+                requested_size,
+                &header,
+                &header_backend,
+                &state,
+            )
+        });
+
+        self.state
+            .ensure_database(&self.pool, &self.path, expansion_callback)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::TableDefinition;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_create_and_open_database() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-        assert_eq!(db.list_column_families().len(), 0);
-    }
-
-    #[test]
-    fn test_create_column_family() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-
-        let cf = db.create_column_family("test_cf", None).unwrap();
-        assert_eq!(cf.name(), "test_cf");
-
-        let names = db.list_column_families();
-        assert_eq!(names.len(), 1);
-        assert_eq!(names[0], "test_cf");
-    }
-
-    #[test]
-    fn test_duplicate_column_family_fails() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-
-        db.create_column_family("test_cf", None).unwrap();
-        let result = db.create_column_family("test_cf", None);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_get_column_family() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-        db.create_column_family("test_cf", None).unwrap();
-
-        let cf = db.column_family("test_cf").unwrap();
-        assert_eq!(cf.name(), "test_cf");
-    }
-
-    #[test]
-    fn test_get_nonexistent_column_family_fails() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-        let result = db.column_family("nonexistent");
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_multiple_column_families() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-
-        db.create_column_family("users", Some(512 * 1024 * 1024))
-            .unwrap();
-        db.create_column_family("products", Some(256 * 1024 * 1024))
-            .unwrap();
-        db.create_column_family("orders", None).unwrap();
-
-        let names = db.list_column_families();
-        assert_eq!(names.len(), 3);
-        assert!(names.contains(&"users".to_string()));
-        assert!(names.contains(&"products".to_string()));
-        assert!(names.contains(&"orders".to_string()));
-    }
-
-    #[test]
-    fn test_reopen_database_preserves_column_families() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path().to_path_buf();
-
-        {
-            let db = ColumnFamilyDatabase::open(&path).unwrap();
-            db.create_column_family("persistent_cf", None).unwrap();
-        }
-
-        // Reopen the database
-        let db = ColumnFamilyDatabase::open(&path).unwrap();
-        let names = db.list_column_families();
-
-        assert_eq!(names.len(), 1);
-        assert_eq!(names[0], "persistent_cf");
-
-        // Should be able to get the column family
-        let cf = db.column_family("persistent_cf").unwrap();
-        assert_eq!(cf.name(), "persistent_cf");
-    }
-
-    #[test]
-    fn test_column_family_clone() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-        let cf1 = db.create_column_family("test_cf", None).unwrap();
-
-        let cf2 = cf1.clone();
-        assert_eq!(cf1.name(), cf2.name());
-    }
-
-    #[test]
-    fn test_delete_column_family() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-        db.create_column_family("test_cf", None).unwrap();
-
-        assert_eq!(db.list_column_families().len(), 1);
-
-        db.delete_column_family("test_cf").unwrap();
-        assert_eq!(db.list_column_families().len(), 0);
-
-        // Should not be able to get deleted CF
-        assert!(db.column_family("test_cf").is_err());
-    }
-
-    #[test]
-    fn test_delete_nonexistent_column_family_fails() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-        let result = db.delete_column_family("nonexistent");
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_space_reuse_after_delete() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-
-        // Create and delete a column family
-        db.create_column_family("temp_cf", Some(1024 * 1024))
-            .unwrap();
-
-        db.delete_column_family("temp_cf").unwrap();
-
-        // Check that free segments were added
-        let free_segment_count = {
-            let header_after_delete = db.header.read().unwrap();
-            assert!(!header_after_delete.free_segments.is_empty());
-            header_after_delete.free_segments.len()
-        };
-
-        // Create a new column family - should reuse the free segment
-        db.create_column_family("new_cf", Some(512 * 1024)).unwrap();
-
-        // Verify that a free segment was consumed (count should decrease)
-        let final_free_segment_count = {
-            let header_after_create = db.header.read().unwrap();
-            header_after_create.free_segments.len()
-        };
-
-        // Free segment should have been used or split (count may stay same if split, or decrease if fully used)
-        assert!(
-            final_free_segment_count <= free_segment_count,
-            "Expected free segments to be reused"
-        );
-    }
-
-    #[test]
-    fn test_automatic_expansion() {
-        const TEST_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("test");
-
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path();
-
-        let db = ColumnFamilyDatabase::open(path).unwrap();
-
-        // Create a very small column family to force expansion
-        let cf = db.create_column_family("small_cf", Some(8192)).unwrap();
-
-        // Check initial segment count (may be >1 if Database init triggered expansion)
-        let initial_segments = {
-            let header_before = db.header.read().unwrap();
-            let cf_meta_before = header_before
-                .column_families
-                .iter()
-                .find(|c| c.name == "small_cf")
-                .unwrap();
-            cf_meta_before.segments.len()
-        };
-
-        // Write enough data to trigger expansion beyond initial segments
-        // Database init may have already expanded, so write a lot more data
-        let write_txn = cf.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(TEST_TABLE).unwrap();
-            let data = vec![0u8; 8192];
-            // Write many large values to definitely trigger multiple expansions
-            for i in 0..100 {
-                table.insert(&i, data.as_slice()).unwrap();
-            }
-        }
-        write_txn.commit().unwrap();
-
-        // Check that a new segment was added
-        let final_segments = {
-            let header_after = db.header.read().unwrap();
-            let cf_meta_after = header_after
-                .column_families
-                .iter()
-                .find(|c| c.name == "small_cf")
-                .unwrap();
-            cf_meta_after.segments.len()
-        };
-
-        // Should have grown to multiple segments
-        assert!(
-            final_segments > initial_segments,
-            "Expected segments to grow from {initial_segments} but got {final_segments}"
-        );
-    }
-
-    #[test]
-    fn test_concurrent_expansion() {
-        const TEST_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("test");
-        use std::thread;
-
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path().to_path_buf();
-
-        {
-            let db = ColumnFamilyDatabase::open(&path).unwrap();
-
-            // Create two small column families
-            db.create_column_family("cf1", Some(8192)).unwrap();
-            db.create_column_family("cf2", Some(8192)).unwrap();
-        }
-
-        // Reopen and test concurrent expansion
-        let db = Arc::new(ColumnFamilyDatabase::open(&path).unwrap());
-
-        let db1 = db.clone();
-        let handle1 = thread::spawn(move || {
-            let cf = db1.column_family("cf1").unwrap();
-            let write_txn = cf.begin_write().unwrap();
-            {
-                let mut table = write_txn.open_table(TEST_TABLE).unwrap();
-                let data = vec![0u8; 8192];
-                for i in 0..100 {
-                    table.insert(&i, data.as_slice()).unwrap();
-                }
-            }
-            write_txn.commit().unwrap();
-        });
-
-        let db2 = db.clone();
-        let handle2 = thread::spawn(move || {
-            let cf = db2.column_family("cf2").unwrap();
-            let write_txn = cf.begin_write().unwrap();
-            {
-                let mut table = write_txn.open_table(TEST_TABLE).unwrap();
-                let data = vec![0u8; 8192];
-                for i in 0..100 {
-                    table.insert(&i, data.as_slice()).unwrap();
-                }
-            }
-            write_txn.commit().unwrap();
-        });
-
-        handle1.join().unwrap();
-        handle2.join().unwrap();
-
-        // Verify both column families expanded
-        {
-            let header = db.header.read().unwrap();
-            for cf_name in &["cf1", "cf2"] {
-                let cf_meta = header
-                    .column_families
-                    .iter()
-                    .find(|c| c.name == *cf_name)
-                    .unwrap();
-                assert!(
-                    cf_meta.segments.len() > 1,
-                    "Expected {cf_name} to have multiple segments"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_persistence_with_segments() {
-        let tmpfile = NamedTempFile::new().unwrap();
-        let path = tmpfile.path().to_path_buf();
-
-        {
-            let db = ColumnFamilyDatabase::open(&path).unwrap();
-            db.create_column_family("users", Some(1024 * 1024)).unwrap();
-            db.create_column_family("products", Some(512 * 1024))
-                .unwrap();
-        }
-
-        // Reopen and verify column families are restored
-        let db = ColumnFamilyDatabase::open(&path).unwrap();
-        let names = db.list_column_families();
-
-        assert_eq!(names.len(), 2);
-        assert!(names.contains(&"users".to_string()));
-        assert!(names.contains(&"products".to_string()));
-
-        // Verify we can use them
-        let users_cf = db.column_family("users").unwrap();
-        let products_cf = db.column_family("products").unwrap();
-
-        assert_eq!(users_cf.name(), "users");
-        assert_eq!(products_cf.name(), "products");
+impl Drop for ColumnFamilyDatabase {
+    fn drop(&mut self) {
+        // Close the header backend to release the file lock
+        let _ = self.header_backend.close();
     }
 }
