@@ -8,6 +8,30 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+/// Helper structure for coalescing contiguous writes into a single buffer.
+/// This dramatically reduces syscall overhead when flushing the write buffer.
+struct CoalescedWrite {
+    offset: u64,
+    data: Vec<u8>,
+}
+
+impl CoalescedWrite {
+    fn new(offset: u64, buffer: Arc<[u8]>) -> Self {
+        Self {
+            offset,
+            data: buffer.to_vec(),
+        }
+    }
+
+    fn end_offset(&self) -> u64 {
+        self.offset + self.data.len() as u64
+    }
+
+    fn append(&mut self, buffer: Arc<[u8]>) {
+        self.data.extend_from_slice(&buffer);
+    }
+}
+
 pub(super) struct WritablePage {
     buffer: Arc<Mutex<LRUWriteCache>>,
     offset: u64,
@@ -295,13 +319,61 @@ impl PagedCachedFile {
     }
 
     fn flush_write_buffer(&self) -> Result {
-        let mut write_buffer = self.write_buffer.lock().unwrap();
+        // CRITICAL: Don't hold the write_buffer lock during I/O!
+        // This was the bottleneck causing 10x slowdown with 4+ threads.
+        // Instead: lock, drain buffers, unlock, then do I/O
 
-        for (offset, buffer) in write_buffer.cache.iter() {
-            self.file.write(*offset, buffer.as_ref().unwrap())?;
+        let buffers_to_write = {
+            let mut write_buffer = self.write_buffer.lock().unwrap();
+            let buffers: Vec<(u64, Arc<[u8]>)> = write_buffer
+                .cache
+                .iter_mut()
+                .map(|(offset, buffer)| (*offset, buffer.take().unwrap()))
+                .collect();
+
+            self.write_buffer_bytes.store(0, Ordering::Release);
+            write_buffer.clear();
+            buffers
+        }; // Lock released here - critical for concurrency!
+
+        // OPTIMIZATION: Sort and coalesce contiguous writes to reduce syscall overhead.
+        // This is critical for concurrent column family performance where many small
+        // writes were causing kernel-level serialization.
+
+        // Sort by offset to identify contiguous ranges
+        let mut sorted_buffers: Vec<(u64, Arc<[u8]>)> = buffers_to_write;
+        sorted_buffers.sort_unstable_by_key(|(offset, _)| *offset);
+
+        // Coalesce contiguous writes into larger operations
+        let mut coalesced_writes: Vec<CoalescedWrite> = Vec::new();
+
+        for (offset, buffer) in &sorted_buffers {
+            // Try to merge with the last coalesced write if contiguous
+            let merged = if let Some(last) = coalesced_writes.last_mut() {
+                if last.end_offset() == *offset {
+                    // Contiguous - append to current coalesced range
+                    last.append(Arc::clone(buffer));
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if !merged {
+                // Start a new coalesced range
+                coalesced_writes.push(CoalescedWrite::new(*offset, Arc::clone(buffer)));
+            }
         }
-        for (offset, buffer) in write_buffer.cache.iter_mut() {
-            let buffer = buffer.take().unwrap();
+
+        // Write each coalesced range - significantly fewer syscalls!
+        for write in &coalesced_writes {
+            self.file.write(write.offset, &write.data)?;
+        }
+
+        // Move original buffers to read cache (this locks each cache slot individually)
+        for (offset, buffer) in sorted_buffers {
             let cache_size = self
                 .read_cache_bytes
                 .fetch_add(buffer.len(), Ordering::AcqRel);
@@ -309,7 +381,7 @@ impl PagedCachedFile {
             if cache_size + buffer.len() <= self.max_read_cache_bytes {
                 let cache_slot: usize = (offset % Self::lock_stripes()).try_into().unwrap();
                 let mut lock = self.read_cache[cache_slot].write().unwrap();
-                if let Some(replaced) = lock.insert(*offset, buffer) {
+                if let Some(replaced) = lock.insert(offset, buffer) {
                     // A race could cause us to replace an existing buffer
                     self.read_cache_bytes
                         .fetch_sub(replaced.len(), Ordering::AcqRel);
@@ -320,8 +392,6 @@ impl PagedCachedFile {
                 break;
             }
         }
-        self.write_buffer_bytes.store(0, Ordering::Release);
-        write_buffer.clear();
 
         Ok(())
     }
