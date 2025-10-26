@@ -16,6 +16,12 @@ Within each column family, the existing redb table system is used to organize da
 
 This design maps naturally to real-world application domains while providing true concurrent write capability through per-column-family write locks rather than a global database write lock.
 
+### Global Index Pattern
+
+A powerful pattern enabled by column families is the global index. Applications can designate a special column family (by convention named with an underscore prefix like `_global_index`) that contains cross-cutting indexes spanning all other column families. This allows querying across different entity types or domains while maintaining the organizational benefits of separate column families.
+
+For example, a vector database might store different entity types (users, products, documents) in separate column families for concurrent write performance, but maintain a global index column family containing all vector embeddings. Queries can scan the global index to find relevant entities across all types, then fan out to the appropriate type-specific column families to retrieve full data. This pattern combines the performance benefits of column family isolation with the flexibility of cross-domain queries.
+
 ### Single File Architecture
 
 The database file begins with a master header containing metadata about all column families including their names, byte offsets, and allocated sizes. Following the master header, each column family is laid out sequentially as a complete redb database structure with its own super-header, transaction slots, and region allocations.
@@ -251,6 +257,7 @@ Variable-width types use efficient binary serialization through bincode rather t
   - Show creating column families for different domains
   - Demonstrate concurrent writes to different column families
   - Show multiple tables within a column family
+  - Demonstrate global index pattern (cross-CF queries using special `_global_index` column family)
   - Located in `examples/column_families.rs`
   - **Dev Notes:**
 
