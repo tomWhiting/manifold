@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -15,6 +16,56 @@ use super::partitioned_backend::PartitionedStorageBackend;
 
 /// Default size allocated to a new column family (1 GB).
 const DEFAULT_COLUMN_FAMILY_SIZE: u64 = 1024 * 1024 * 1024;
+
+/// Errors that can occur when working with column families.
+#[derive(Debug)]
+pub enum ColumnFamilyError {
+    /// A column family with this name already exists.
+    AlreadyExists(String),
+    /// The requested column family was not found.
+    NotFound(String),
+    /// An underlying database error occurred.
+    Database(DatabaseError),
+    /// An I/O error occurred.
+    Io(io::Error),
+}
+
+impl fmt::Display for ColumnFamilyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ColumnFamilyError::AlreadyExists(name) => {
+                write!(f, "column family '{name}' already exists")
+            }
+            ColumnFamilyError::NotFound(name) => {
+                write!(f, "column family '{name}' not found")
+            }
+            ColumnFamilyError::Database(e) => write!(f, "database error: {e}"),
+            ColumnFamilyError::Io(e) => write!(f, "I/O error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ColumnFamilyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ColumnFamilyError::Database(e) => Some(e),
+            ColumnFamilyError::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<DatabaseError> for ColumnFamilyError {
+    fn from(err: DatabaseError) -> Self {
+        ColumnFamilyError::Database(err)
+    }
+}
+
+impl From<io::Error> for ColumnFamilyError {
+    fn from(err: io::Error) -> Self {
+        ColumnFamilyError::Io(err)
+    }
+}
 
 /// A database that manages multiple independent column families within a single file.
 ///
@@ -66,7 +117,7 @@ impl ColumnFamilyDatabase {
     ///
     /// Returns an error if the file cannot be opened, the header is invalid, or any
     /// column family cannot be initialized.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, ColumnFamilyError> {
         let path = path.as_ref().to_path_buf();
 
         // Open or create the file
@@ -78,8 +129,7 @@ impl ColumnFamilyDatabase {
             .open(&path)
             .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
 
-        let file_backend =
-            FileBackend::new(file)?;
+        let file_backend = FileBackend::new(file)?;
         let file_backend: Arc<dyn StorageBackend> = Arc::new(file_backend);
 
         // Check if file is new (empty)
@@ -149,7 +199,7 @@ impl ColumnFamilyDatabase {
         &self,
         name: impl Into<String>,
         size: Option<u64>,
-    ) -> Result<ColumnFamily, DatabaseError> {
+    ) -> Result<ColumnFamily, ColumnFamilyError> {
         let name = name.into();
         let size = size.unwrap_or(DEFAULT_COLUMN_FAMILY_SIZE);
 
@@ -158,10 +208,7 @@ impl ColumnFamilyDatabase {
 
         // Check for duplicate name
         if cfs.contains_key(&name) {
-            return Err(DatabaseError::Storage(StorageError::Io(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("column family '{}' already exists", name),
-            ))));
+            return Err(ColumnFamilyError::AlreadyExists(name));
         }
 
         // Calculate next available offset
@@ -190,21 +237,16 @@ impl ColumnFamilyDatabase {
         let db = Database::builder().create_with_backend(partition_backend)?;
         let db = Arc::new(db);
 
-        // Update master header
+        // Update master header in memory
         header.column_families.push(metadata);
 
-        // Persist updated header to disk
-        let header_bytes = header
-            .to_bytes()
-            .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
-        self.file_backend
-            .write(0, &header_bytes)
-            .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
-        self.file_backend
-            .sync_data()
-            .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+        // Persist updated header to disk BEFORE updating the in-memory map
+        // This ensures atomicity - if the write fails, the in-memory state remains consistent
+        let header_bytes = header.to_bytes()?;
+        self.file_backend.write(0, &header_bytes)?;
+        self.file_backend.sync_data()?;
 
-        // Add to column families map
+        // Only after successful persistence, add to column families map
         cfs.insert(name.clone(), db.clone());
 
         Ok(ColumnFamily { name, db })
@@ -215,7 +257,7 @@ impl ColumnFamilyDatabase {
     /// # Errors
     ///
     /// Returns an error if no column family with the given name exists.
-    pub fn column_family(&self, name: &str) -> Result<ColumnFamily, DatabaseError> {
+    pub fn column_family(&self, name: &str) -> Result<ColumnFamily, ColumnFamilyError> {
         let cfs = self.column_families.read().unwrap();
 
         match cfs.get(name) {
@@ -223,10 +265,7 @@ impl ColumnFamilyDatabase {
                 name: name.to_string(),
                 db: db.clone(),
             }),
-            None => Err(DatabaseError::Storage(StorageError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("column family '{}' not found", name),
-            )))),
+            None => Err(ColumnFamilyError::NotFound(name.to_string())),
         }
     }
 

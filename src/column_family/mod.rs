@@ -51,6 +51,6 @@ pub(crate) mod database;
 pub(crate) mod header;
 pub(crate) mod partitioned_backend;
 
-pub use database::{ColumnFamily, ColumnFamilyDatabase};
-pub use header::{ColumnFamilyMetadata, MasterHeader, FORMAT_VERSION, MAGIC_NUMBER};
+pub use database::{ColumnFamily, ColumnFamilyDatabase, ColumnFamilyError};
+pub use header::{ColumnFamilyMetadata, FORMAT_VERSION, MAGIC_NUMBER, MasterHeader};
 pub use partitioned_backend::PartitionedStorageBackend;

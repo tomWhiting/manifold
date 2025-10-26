@@ -33,10 +33,11 @@ impl ColumnFamilyMetadata {
 
     /// Serializes this metadata entry to bytes.
     ///
-    /// Format: name_len (u32) | name_bytes | offset (u64) | size (u64)
+    /// Format: `name_len` (u32) | `name_bytes` | `offset` (u64) | `size` (u64)
     fn to_bytes(&self) -> Vec<u8> {
         let name_bytes = self.name.as_bytes();
-        let name_len = name_bytes.len() as u32;
+        let name_len =
+            u32::try_from(name_bytes.len()).expect("column family name exceeds maximum length");
 
         let mut bytes = Vec::with_capacity(4 + name_bytes.len() + 8 + 8);
         bytes.extend_from_slice(&name_len.to_le_bytes());
@@ -49,7 +50,7 @@ impl ColumnFamilyMetadata {
 
     /// Deserializes metadata from bytes.
     ///
-    /// Returns (metadata, bytes_consumed) on success.
+    /// Returns (`metadata`, `bytes_consumed`) on success.
     fn from_bytes(data: &[u8]) -> io::Result<(Self, usize)> {
         if data.len() < 4 {
             return Err(io::Error::new(
@@ -74,7 +75,7 @@ impl ColumnFamilyMetadata {
         let name = String::from_utf8(data[4..4 + name_len].to_vec()).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid UTF-8 in column family name: {}", e),
+                format!("invalid UTF-8 in column family name: {e}"),
             )
         })?;
 
@@ -124,11 +125,11 @@ impl MasterHeader {
     /// Format:
     /// - magic (9 bytes)
     /// - version (1 byte)
-    /// - cf_count (u32)
+    /// - `cf_count` (u32)
     /// - metadata entries (variable)
     /// - padding to page size
     ///
-    /// Returns error if serialized size exceeds PAGE_SIZE.
+    /// Returns error if serialized size exceeds `PAGE_SIZE`.
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(PAGE_SIZE);
 
@@ -139,7 +140,7 @@ impl MasterHeader {
         bytes.push(self.version);
 
         // Column family count
-        let cf_count = self.column_families.len() as u32;
+        let cf_count = u32::try_from(self.column_families.len()).expect("too many column families");
         bytes.extend_from_slice(&cf_count.to_le_bytes());
 
         // Serialize each column family metadata
@@ -177,7 +178,7 @@ impl MasterHeader {
         }
 
         // Validate magic number
-        if &data[0..9] != &MAGIC_NUMBER {
+        if data[0..9] != MAGIC_NUMBER {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid magic number",
@@ -189,7 +190,7 @@ impl MasterHeader {
         if version != FORMAT_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unsupported format version: {}", version),
+                format!("unsupported format version: {version}"),
             ));
         }
 
@@ -290,10 +291,7 @@ impl MasterHeader {
                 if start1 < end2 && start2 < end1 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!(
-                            "column families '{}' and '{}' have overlapping ranges",
-                            name1, name2
-                        ),
+                        format!("column families '{name1}' and '{name2}' have overlapping ranges"),
                     ));
                 }
             }
@@ -405,7 +403,7 @@ mod tests {
 
     #[test]
     fn test_validate_empty_name() {
-        let cf = ColumnFamilyMetadata::new("".to_string(), PAGE_SIZE as u64, 1024);
+        let cf = ColumnFamilyMetadata::new(String::new(), PAGE_SIZE as u64, 1024);
         let header = MasterHeader::with_column_families(vec![cf]);
 
         let result = header.validate();
@@ -452,8 +450,13 @@ mod tests {
 
     #[test]
     fn test_validate_adjacent_ranges_ok() {
-        let cf1 = ColumnFamilyMetadata::new("users".to_string(), PAGE_SIZE as u64, PAGE_SIZE as u64);
-        let cf2 = ColumnFamilyMetadata::new("products".to_string(), (PAGE_SIZE * 2) as u64, PAGE_SIZE as u64 * 2);
+        let cf1 =
+            ColumnFamilyMetadata::new("users".to_string(), PAGE_SIZE as u64, PAGE_SIZE as u64);
+        let cf2 = ColumnFamilyMetadata::new(
+            "products".to_string(),
+            (PAGE_SIZE * 2) as u64,
+            PAGE_SIZE as u64 * 2,
+        );
         let header = MasterHeader::with_column_families(vec![cf1, cf2]);
 
         assert!(header.validate().is_ok());
@@ -463,9 +466,9 @@ mod tests {
     fn test_header_too_large() {
         // Create many column families with long names to exceed page size
         let mut cfs = Vec::new();
-        for i in 0..100 {
-            let name = format!("column_family_with_very_long_name_{}", i);
-            let offset = PAGE_SIZE as u64 + (i as u64 * 1024 * 1024);
+        for i in 0..100_u64 {
+            let name = format!("column_family_with_very_long_name_{i}");
+            let offset = PAGE_SIZE as u64 + (i * 1024 * 1024);
             cfs.push(ColumnFamilyMetadata::new(name, offset, 1024 * 1024));
         }
 

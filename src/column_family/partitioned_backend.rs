@@ -92,7 +92,7 @@ impl PartitionedStorageBackend {
         let end_offset = offset.checked_add(len_u64).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("offset + length overflows: offset={}, len={}", offset, len),
+                format!("offset + length overflows: offset={offset}, len={len}"),
             )
         })?;
 
@@ -126,7 +126,7 @@ impl Debug for PartitionedStorageBackend {
         f.debug_struct("PartitionedStorageBackend")
             .field("partition_offset", &self.partition_offset)
             .field("partition_size", &self.partition_size)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -136,7 +136,7 @@ impl StorageBackend for PartitionedStorageBackend {
         // This is calculated as: min(underlying_len - partition_offset, partition_size)
         // If the file hasn't been extended to cover this partition yet, this will return 0
         let underlying_len = self.inner.len()?;
-        
+
         if underlying_len <= self.partition_offset {
             // Partition hasn't been allocated yet
             Ok(0)
@@ -171,7 +171,13 @@ impl StorageBackend for PartitionedStorageBackend {
             )
         })?;
 
-        // Only grow the underlying storage if needed
+        // Only grow the underlying storage if needed. We intentionally do not shrink
+        // the underlying storage when len < current_len, as:
+        // 1. Other partitions may be using space beyond this partition
+        // 2. Shrinking would require coordination across all partitions
+        // 3. The storage backend will handle any necessary compaction
+        //
+        // This design choice favors simplicity and safety over aggressive space reclamation.
         let current_underlying_len = self.inner.len()?;
         if absolute_len > current_underlying_len {
             self.inner.set_len(absolute_len)?;

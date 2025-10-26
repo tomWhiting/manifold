@@ -70,6 +70,58 @@ Fixed-width types should be used for performance-critical data like vector embed
 
 Variable-width types use efficient binary serialization through bincode rather than JSON. Custom Value trait implementations handle serialization, providing type safety while avoiding text-based encoding overhead. The combination of fixed-width and variable-width types optimizes each table for its specific access patterns.
 
+## Design Decisions
+
+This section documents important design decisions made during implementation, including rationale and trade-offs.
+
+### Magic Number: 9 Bytes Instead of 8
+
+**Decision:** The master header magic number is 9 bytes (`b"redb-cf\x1A\x0A"`) rather than the initially planned 8 bytes.
+
+**Rationale:** The additional bytes (0x1A and 0x0A) serve as DOS and Unix line ending detection markers. If the file is accidentally opened in text mode or transferred using text-mode FTP, these bytes will be corrupted, allowing early detection of file corruption. This is a common practice in binary file formats (e.g., PNG uses similar markers).
+
+**Trade-off:** One extra byte of overhead in the header (negligible given the 4KB page size).
+
+### PartitionedStorageBackend len() Behavior
+
+**Decision:** The `len()` method returns the actual allocated size within the partition, calculated as `min(underlying_len - partition_offset, partition_size)`, returning 0 if the partition hasn't been allocated yet.
+
+**Rationale:** This allows the Database instance to correctly detect empty (uninitialized) partitions versus partitions that already contain data. If `len()` always returned `partition_size`, the Database would think the partition already contained data and fail to initialize properly.
+
+**Implementation Detail:** When a partition is first created, the underlying storage hasn't been extended to cover it yet, so `len()` returns 0. As the Database writes data via `set_len()`, the underlying storage grows and `len()` begins returning the actual allocated amount.
+
+### set_len() No-Shrink Policy
+
+**Decision:** The `set_len()` implementation only grows the underlying storage when needed; it does not shrink the underlying storage when requested length is less than current length.
+
+**Rationale:**
+1. Other partitions may be using space beyond this partition in the shared underlying storage
+2. Shrinking would require coordination across all partitions to ensure safety
+3. The underlying storage backend can handle any necessary compaction at the file level
+4. Simplicity and safety are prioritized over aggressive space reclamation
+
+**Trade-off:** May result in some wasted space if partitions shrink significantly, but this is an acceptable trade-off for operational simplicity.
+
+### Custom Error Type: ColumnFamilyError
+
+**Decision:** Implemented a dedicated `ColumnFamilyError` enum with specific variants (`AlreadyExists`, `NotFound`, `Database`, `Io`) rather than using generic `io::Error` or `DatabaseError` everywhere.
+
+**Rationale:**
+1. Provides type-safe, semantically meaningful error variants
+2. Allows callers to match on specific error conditions (e.g., column family already exists)
+3. Improves error messages with domain-specific context
+4. Follows Rust best practices for error handling
+
+**Implementation:** The error type implements `std::error::Error`, `Display`, and provides `From` conversions for underlying error types, making it ergonomic to use with the `?` operator.
+
+### Atomic Header Updates in create_column_family()
+
+**Decision:** The implementation persists the updated header to disk (including fsync) before adding the new column family to the in-memory map.
+
+**Rationale:** This ensures atomicity and consistency. If the header write fails (e.g., disk full, I/O error), the in-memory state remains unchanged and the error propagates to the caller. If we updated the in-memory map first, a failed header write would leave the system in an inconsistent state.
+
+**Trade-off:** Slightly more complex code flow, but critical for correctness and recovery from failures.
+
 ## Implementation Phases
 
 ### Phase 1: Partitioned Storage Backend
@@ -85,12 +137,12 @@ Variable-width types use efficient binary serialization through bincode rather t
   - **Dev Notes:** Implemented with Arc<dyn StorageBackend> for shared ownership across multiple partitions. Constructor panics on offset overflow via checked_add for early error detection.
 
 - [x] Implement `StorageBackend` trait for `PartitionedStorageBackend`
-  - Override `len()` to return partition size rather than full file size
+  - Override `len()` to return actual allocated size within partition
   - Override `read()` to translate offset by adding partition_offset before delegating to inner backend
   - Override `write()` with same offset translation
   - Override `set_len()` with bounds checking against partition size
   - Delegate `sync_data()` and `close()` directly to inner backend
-  - **Dev Notes:** All methods use validate_and_translate() helper for consistent bounds checking and offset translation. close() intentionally does not close inner backend since other partitions may share it. set_len() only grows underlying storage if needed, supports shrinking gracefully.
+  - **Dev Notes:** All methods use validate_and_translate() helper for consistent bounds checking and offset translation. close() intentionally does not close inner backend since other partitions may share it. set_len() only grows underlying storage if needed (see Design Decisions section for rationale). Critical: len() returns min(underlying_len - partition_offset, partition_size) to allow Database to detect empty partitions.
 
 - [x] Add bounds checking in all methods to prevent partition overflow
   - Verify offset plus length does not exceed partition_size
@@ -123,11 +175,11 @@ Variable-width types use efficient binary serialization through bincode rather t
 **Key Components:**
 
 - [x] Define `MasterHeader` struct in `src/column_family/header.rs`
-  - Magic number as [u8; 8] constant "redb-cf\x1A\x0A"
+  - Magic number as [u8; 9] constant "redb-cf\x1A\x0A"
   - Version number as u8 (start with 1)
   - Column family count as u32
   - Vector of ColumnFamilyMetadata entries
-  - **Dev Notes:** Magic number is actually 9 bytes (not 8) to include both 0x1A and 0x0A for DOS/Unix line ending detection. Serialization format fits well within one page with room for many column families.
+  - **Dev Notes:** Magic number is 9 bytes (updated from initial plan of 8) to include both 0x1A and 0x0A for DOS/Unix line ending detection - see Design Decisions section. Serialization format fits well within one page with room for many column families.
 
 - [x] Define `ColumnFamilyMetadata` struct
   - Name as String
@@ -238,7 +290,11 @@ Variable-width types use efficient binary serialization through bincode rather t
 - Create: `src/column_family/database.rs`
 - Modify: `src/column_family/mod.rs` (add module and re-exports)
 - Modify: `src/lib.rs` (add public re-export of column_family module - already present)
-- **Critical Fix:** Modified `src/column_family/partitioned_backend.rs` - Changed `len()` implementation to return actual allocated size (min(underlying_len - partition_offset, partition_size)) instead of always returning partition_size. This allows Database to correctly detect empty partitions.
+- **Critical Fixes Applied:**
+  1. Modified `src/column_family/partitioned_backend.rs` - Changed `len()` implementation to return actual allocated size (see Design Decisions section)
+  2. Created `ColumnFamilyError` enum for type-safe error handling with specific variants for common cases
+  3. Fixed atomicity in `create_column_family()` - header is persisted to disk before updating in-memory map
+  4. Enhanced documentation in `set_len()` explaining no-shrink policy
 
 **Dependencies:** Phase 1 and Phase 2 complete
 
