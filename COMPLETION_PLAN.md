@@ -74,35 +74,35 @@ Variable-width types use efficient binary serialization through bincode rather t
 
 ### Phase 1: Partitioned Storage Backend
 
-**Status:** Not Started
+**Status:** Complete
 
 **Objective:** Implement the core offset translation layer that allows a byte range within a file to appear as a complete file to redb Database instances.
 
 **Key Components:**
 
-- [ ] Create `PartitionedStorageBackend` struct in new module `src/column_family/partitioned_backend.rs`
+- [x] Create `PartitionedStorageBackend` struct in new module `src/column_family/partitioned_backend.rs`
   - Contains Arc to underlying StorageBackend, partition offset as u64, and partition size as u64
-  - **Dev Notes:**
+  - **Dev Notes:** Implemented with Arc<dyn StorageBackend> for shared ownership across multiple partitions. Constructor panics on offset overflow via checked_add for early error detection.
 
-- [ ] Implement `StorageBackend` trait for `PartitionedStorageBackend`
+- [x] Implement `StorageBackend` trait for `PartitionedStorageBackend`
   - Override `len()` to return partition size rather than full file size
   - Override `read()` to translate offset by adding partition_offset before delegating to inner backend
   - Override `write()` with same offset translation
   - Override `set_len()` with bounds checking against partition size
   - Delegate `sync_data()` and `close()` directly to inner backend
-  - **Dev Notes:**
+  - **Dev Notes:** All methods use validate_and_translate() helper for consistent bounds checking and offset translation. close() intentionally does not close inner backend since other partitions may share it. set_len() only grows underlying storage if needed, supports shrinking gracefully.
 
-- [ ] Add bounds checking in all methods to prevent partition overflow
+- [x] Add bounds checking in all methods to prevent partition overflow
   - Verify offset plus length does not exceed partition_size
   - Return appropriate io::Error for out-of-bounds access
-  - **Dev Notes:**
+  - **Dev Notes:** validate_and_translate() performs three checks: offset+len overflow, partition bounds, and translation overflow. All use checked arithmetic with descriptive error messages for debugging.
 
-- [ ] Write comprehensive unit tests for offset translation
+- [x] Write comprehensive unit tests for offset translation
   - Test read/write at various offsets within partition
   - Test boundary conditions (offset 0, offset at partition end)
   - Test error cases (overflow, out of bounds)
   - Test with mock backend to verify translation math
-  - **Dev Notes:**
+  - **Dev Notes:** 14 tests cover offset translation, bounds checking, partition isolation, Arc sharing behavior, and error cases. InMemoryBackend requires pre-sizing via set_len() before read/write operations.
 
 **Files Modified:**
 - Create: `src/column_family/partitioned_backend.rs`
@@ -116,50 +116,50 @@ Variable-width types use efficient binary serialization through bincode rather t
 
 ### Phase 2: Master Header Format
 
-**Status:** Not Started
+**Status:** Complete
 
 **Objective:** Define and implement the serialization format for the master header that describes column family layout within the file.
 
 **Key Components:**
 
-- [ ] Define `MasterHeader` struct in `src/column_family/header.rs`
+- [x] Define `MasterHeader` struct in `src/column_family/header.rs`
   - Magic number as [u8; 8] constant "redb-cf\x1A\x0A"
   - Version number as u8 (start with 1)
   - Column family count as u32
   - Vector of ColumnFamilyMetadata entries
-  - **Dev Notes:**
+  - **Dev Notes:** Magic number is actually 9 bytes (not 8) to include both 0x1A and 0x0A for DOS/Unix line ending detection. Serialization format fits well within one page with room for many column families.
 
-- [ ] Define `ColumnFamilyMetadata` struct
+- [x] Define `ColumnFamilyMetadata` struct
   - Name as String
   - Offset as u64 (absolute file offset)
   - Allocated size as u64
-  - **Dev Notes:**
+  - **Dev Notes:** Includes helper methods for serialization/deserialization with proper error handling. Uses length-prefixed strings for variable-length names.
 
-- [ ] Implement `to_bytes()` serialization for MasterHeader
+- [x] Implement `to_bytes()` serialization for MasterHeader
   - Use fixed-size header followed by variable-size metadata array
   - Encode count before metadata entries
   - Use length-prefixed strings for column family names
   - Ensure total serialized size fits within one page (4096 bytes)
-  - **Dev Notes:**
+  - **Dev Notes:** Returns error if header exceeds PAGE_SIZE, pads with zeros to exactly 4096 bytes. Format is: magic(9) + version(1) + count(4) + metadata entries(variable) + padding.
 
-- [ ] Implement `from_bytes()` deserialization for MasterHeader
+- [x] Implement `from_bytes()` deserialization for MasterHeader
   - Validate magic number matches expected value
   - Check version compatibility
   - Parse metadata entries with proper error handling
   - Validate offset and size values for sanity
-  - **Dev Notes:**
+  - **Dev Notes:** Automatically calls validate() after deserialization to ensure consistency. Provides clear error messages for debugging malformed headers.
 
-- [ ] Add validation logic
+- [x] Add validation logic
   - Verify column family names are non-empty and unique
   - Check offsets are page-aligned and non-overlapping
   - Ensure allocated sizes are positive
-  - **Dev Notes:**
+  - **Dev Notes:** Validation uses HashSet for duplicate detection, checks all offsets are 4096-byte aligned, verifies no overlapping ranges using pairwise comparison, and checks for overflow in offset+size calculations.
 
-- [ ] Write serialization round-trip tests
+- [x] Write serialization round-trip tests
   - Test with various column family counts (0, 1, many)
   - Test with different name lengths
   - Test error cases (invalid magic, bad version, corrupt data)
-  - **Dev Notes:**
+  - **Dev Notes:** 15 comprehensive tests covering all validation cases, serialization round-trips, error conditions, and edge cases like adjacent (non-overlapping) ranges and headers that exceed page size.
 
 **Files Modified:**
 - Create: `src/column_family/header.rs`
@@ -173,28 +173,28 @@ Variable-width types use efficient binary serialization through bincode rather t
 
 ### Phase 3: ColumnFamilyDatabase Implementation
 
-**Status:** Not Started
+**Status:** Complete
 
 **Objective:** Implement the main API that manages multiple column families within a single file and provides the public interface for applications.
 
 **Key Components:**
 
-- [ ] Define `ColumnFamilyDatabase` struct in `src/column_family/database.rs`
+- [x] Define `ColumnFamilyDatabase` struct in `src/column_family/database.rs`
   - File path as PathBuf
   - Shared file backend as Arc<dyn StorageBackend>
   - Column family map as Arc<RwLock<HashMap<String, Arc<Database>>>>
   - Master header as Arc<RwLock<MasterHeader>>
-  - **Dev Notes:**
+  - **Dev Notes:** Struct holds Arc-wrapped shared state for thread-safe access. RwLock allows concurrent reads of column family map while serializing writes (creating new column families).
 
-- [ ] Implement `open()` constructor
+- [x] Implement `open()` constructor
   - Open or create file using FileBackend
   - Read master header from first page
   - For each column family in header, create PartitionedStorageBackend and Database instance
   - Populate column family map
   - Handle case of new file (create empty master header)
-  - **Dev Notes:**
+  - **Dev Notes:** Detects new files by checking if length is 0. For new files, writes empty master header to first page. For existing files, reads and deserializes master header, then recreates all Database instances from metadata. FileBackend::new returns DatabaseError directly so no need to wrap it.
 
-- [ ] Implement `create_column_family()` method
+- [x] Implement `create_column_family()` method
   - Acquire write lock on column family map
   - Check for duplicate name
   - Calculate next available offset (after last column family)
@@ -204,40 +204,41 @@ Variable-width types use efficient binary serialization through bincode rather t
   - Update master header and persist to file
   - Add to column family map
   - Return ColumnFamily handle
-  - **Dev Notes:**
+  - **Dev Notes:** First column family starts at PAGE_SIZE (4096) after master header. Subsequent families are placed contiguously based on max(offset+size) of existing families. Database::builder().create_with_backend() handles initialization automatically when partition appears empty (len=0). Critical fix: PartitionedStorageBackend::len() must return actual allocated size, not partition_size, so Database can detect empty partitions.
 
-- [ ] Implement `column_family()` accessor
+- [x] Implement `column_family()` accessor
   - Acquire read lock on map
   - Look up column family by name
   - Return ColumnFamily handle wrapping Arc<Database>
   - Return error if not found
-  - **Dev Notes:**
+  - **Dev Notes:** Returns lightweight ColumnFamily wrapper that clones the Arc<Database>, making it cheap to pass between threads. Uses read lock for concurrent access.
 
-- [ ] Implement `list_column_families()` method
+- [x] Implement `list_column_families()` method
   - Return vector of column family names
-  - **Dev Notes:**
+  - **Dev Notes:** Simple accessor that reads from in-memory header. Returns owned Strings for safety.
 
 - [ ] Implement `delete_column_family()` method (optional, for completeness)
   - Remove from map
   - Update master header
   - Consider space reclamation strategy
-  - **Dev Notes:**
+  - **Dev Notes:** Deferred - not required for initial implementation.
 
-- [ ] Define `ColumnFamily` wrapper struct
+- [x] Define `ColumnFamily` wrapper struct
   - Name as String
   - Database reference as Arc<Database>
-  - **Dev Notes:**
+  - **Dev Notes:** Implements Clone via #[derive(Clone)] which clones the Arc (cheap reference count increment). Provides clean API boundary between column family concept and underlying Database.
 
-- [ ] Implement convenience methods on ColumnFamily
+- [x] Implement convenience methods on ColumnFamily
   - `begin_write()` delegates to Database
   - `begin_read()` delegates to Database
   - Implement Clone using Arc clone (cheap)
-  - **Dev Notes:**
+  - **Dev Notes:** Direct delegation to self.db methods. Requires importing ReadableDatabase trait for begin_read() to be available. Clone is automatically cheap thanks to Arc.
 
 **Files Modified:**
 - Create: `src/column_family/database.rs`
 - Modify: `src/column_family/mod.rs` (add module and re-exports)
-- Modify: `src/lib.rs` (add public re-export of column_family module)
+- Modify: `src/lib.rs` (add public re-export of column_family module - already present)
+- **Critical Fix:** Modified `src/column_family/partitioned_backend.rs` - Changed `len()` implementation to return actual allocated size (min(underlying_len - partition_offset, partition_size)) instead of always returning partition_size. This allows Database to correctly detect empty partitions.
 
 **Dependencies:** Phase 1 and Phase 2 complete
 

@@ -87,6 +87,7 @@ pub use types::{Key, MutInPlaceValue, TypeName, Value};
 pub type Result<T = (), E = StorageError> = std::result::Result<T, E>;
 
 pub mod backends;
+pub mod column_family;
 mod complex_types;
 mod db;
 mod error;
