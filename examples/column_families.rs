@@ -117,6 +117,7 @@ fn demonstrate_concurrent_writes(db: &ColumnFamilyDatabase) -> Result<(), Box<dy
     }
 
     // Wait for all threads to complete
+    #[allow(clippy::question_mark)]
     for handle in handles {
         if let Err(e) = handle.join().expect("Thread panicked") {
             return Err(e);
