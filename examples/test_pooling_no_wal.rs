@@ -1,7 +1,7 @@
 //! Test pooling WITHOUT WAL to isolate the issue
 
-use manifold::column_family::ColumnFamilyDatabase;
 use manifold::TableDefinition;
+use manifold::column_family::ColumnFamilyDatabase;
 use std::sync::Arc;
 use std::time::Instant;
 use tempfile::NamedTempFile;
@@ -17,13 +17,23 @@ fn main() {
 
     for num_threads in [1, 2, 4, 8] {
         let tmpfile = NamedTempFile::new().unwrap();
-        let db = Arc::new(ColumnFamilyDatabase::builder()
-            .pool_size(64)  // Large pool
-            .open(tmpfile.path())
-            .unwrap());
+        let db = Arc::new(
+            ColumnFamilyDatabase::builder()
+                .pool_size(64) // Large pool
+                .open(tmpfile.path())
+                .unwrap(),
+        );
 
         for i in 0..num_threads {
-            db.create_column_family(&format!("cf_{}", i), Some(10 * 1024 * 1024)).unwrap();
+            // Use MUCH larger partitions (1GB each) to avoid any potential overlap
+            db.create_column_family(&format!("cf_{}", i), Some(1024 * 1024 * 1024))
+                .unwrap();
+        }
+
+        // Pre-initialize all databases before timing
+        for i in 0..num_threads {
+            let cf = db.column_family(&format!("cf_{}", i)).unwrap();
+            let _ = cf.begin_write().unwrap(); // Force database initialization
         }
 
         let start = Instant::now();
@@ -34,7 +44,9 @@ fn main() {
             let data_clone = data.clone();
 
             let handle = std::thread::spawn(move || {
-                let cf = db_clone.column_family(&format!("cf_{}", thread_id)).unwrap();
+                let cf = db_clone
+                    .column_family(&format!("cf_{}", thread_id))
+                    .unwrap();
 
                 for batch in 0..100 {
                     let txn = cf.begin_write().unwrap();
@@ -59,8 +71,12 @@ fn main() {
         let total_ops = num_threads * 100 * 1000;
         let throughput = total_ops as f64 / duration.as_secs_f64();
 
-        println!("{} threads: {:.0} ops/sec ({:.2}s)", 
-                 num_threads, throughput, duration.as_secs_f64());
+        println!(
+            "{} threads: {:.0} ops/sec ({:.2}s)",
+            num_threads,
+            throughput,
+            duration.as_secs_f64()
+        );
     }
 
     println!("\n{}", "=".repeat(80));

@@ -12,6 +12,7 @@ use crate::tree_store::page_store::{PageImpl, PageMut, hash128_with_seed};
 use crate::tree_store::{Page, PageNumber, PageTrackerPolicy};
 use crate::{CacheStats, StorageBackend};
 use crate::{DatabaseError, Result, StorageError};
+use arc_swap::ArcSwap;
 use std::cmp::{max, min};
 #[cfg(debug_assertions)]
 use std::collections::HashMap;
@@ -19,7 +20,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::io::ErrorKind;
-#[cfg(debug_assertions)]
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -109,6 +109,9 @@ pub(crate) struct TransactionalMemory {
     needs_recovery: AtomicBool,
     storage: PagedCachedFile,
     state: Mutex<InMemoryState>,
+    // Lock-free header for fast read access during commits
+    // This eliminates the critical bottleneck in concurrent column family writes
+    header_snapshot: ArcSwap<DatabaseHeader>,
     // The number of PageMut which are outstanding
     #[cfg(debug_assertions)]
     open_dirty_pages: Arc<Mutex<HashSet<PageNumber>>>,
@@ -168,8 +171,14 @@ impl TransactionalMemory {
             };
 
         if initial_storage_len > 0 {
-            // File already exists check that the magic number matches
-            if magic_number != MAGICNUMBER {
+            // File already exists - check the magic number
+            if magic_number == MAGICNUMBER {
+                // Valid existing database - proceed with opening
+            } else if magic_number == [0u8; MAGICNUMBER.len()] {
+                // Zero-filled space (from pre-allocation) - treat as uninitialized
+                // This happens when partition space is pre-allocated but not yet initialized
+            } else {
+                // Non-zero, non-magic data - file is corrupted
                 return Err(StorageError::Io(ErrorKind::InvalidData.into()).into());
             }
         } else {
@@ -263,6 +272,7 @@ impl TransactionalMemory {
         assert_eq!(layout.len(), storage.raw_file_len()?);
         let region_size = layout.full_region_layout().len();
         let region_header_size = layout.full_region_layout().data_section().start;
+        let header_snapshot = Arc::new(header.clone());
         let state = InMemoryState::new(header);
 
         assert!(page_size >= DB_HEADER_SIZE);
@@ -273,6 +283,7 @@ impl TransactionalMemory {
             needs_recovery: AtomicBool::new(needs_recovery),
             storage,
             state: Mutex::new(state),
+            header_snapshot: ArcSwap::new(header_snapshot),
             #[cfg(debug_assertions)]
             open_dirty_pages: Arc::new(Mutex::new(HashSet::new())),
             #[cfg(debug_assertions)]
@@ -352,7 +363,8 @@ impl TransactionalMemory {
 
         self.needs_recovery
             .store(header.recovery_required, Ordering::Release);
-        self.state.lock().unwrap().header = header;
+        self.state.lock().unwrap().header = header.clone();
+        self.header_snapshot.store(Arc::new(header));
 
         Ok(was_clean)
     }
@@ -362,6 +374,7 @@ impl TransactionalMemory {
         assert!(!state.header.recovery_required);
         state.header.recovery_required = true;
         self.write_header(&state.header)?;
+        self.header_snapshot.store(Arc::new(state.header.clone()));
         self.storage.flush()
     }
 
@@ -381,11 +394,13 @@ impl TransactionalMemory {
     pub(crate) fn repair_primary_corrupted(&self) {
         let mut state = self.state.lock().unwrap();
         state.header.swap_primary_slot();
+        self.header_snapshot.store(Arc::new(state.header.clone()));
     }
 
     pub(crate) fn begin_repair(&self) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         state.allocators = Allocators::new(state.header.layout());
+        self.header_snapshot.store(Arc::new(state.header.clone()));
         #[cfg(debug_assertions)]
         self.allocated_pages.lock().unwrap().clear();
 
@@ -414,6 +429,7 @@ impl TransactionalMemory {
         let mut state = self.state.lock().unwrap();
         state.header.recovery_required = false;
         self.write_header(&state.header)?;
+        self.header_snapshot.store(Arc::new(state.header.clone()));
         let result = self.storage.flush();
         self.needs_recovery.store(false, Ordering::Release);
 
@@ -548,9 +564,12 @@ impl TransactionalMemory {
         // Resize the allocators to match the current file size
         let layout = state.header.layout();
         state.allocators.resize_to(layout);
+
+        state.header.recovery_required = false;
+        self.header_snapshot.store(Arc::new(state.header.clone()));
+
         drop(state);
 
-        self.state.lock().unwrap().header.recovery_required = false;
         self.needs_recovery.store(false, Ordering::Release);
 
         Ok(())
@@ -662,7 +681,9 @@ impl TransactionalMemory {
             state.header.secondary_slot().transaction_id,
             old_transaction_id
         );
-        state.header = header;
+        state.header = header.clone();
+        // Update lock-free snapshot BEFORE releasing the lock
+        self.header_snapshot.store(Arc::new(header));
         self.read_from_secondary.store(false, Ordering::Release);
         // Hold lock until read_from_secondary is set to false, so that the new primary state is read.
         // TODO: maybe we can remove the whole read_from_secondary flag?
@@ -678,6 +699,7 @@ impl TransactionalMemory {
         system_root: Option<BtreeHeader>,
         transaction_id: TransactionId,
     ) -> Result {
+        let commit_start = std::time::Instant::now();
         // All mutable pages must be dropped, this ensures that when a transaction completes
         // no more writes can happen to the pages it allocated. Thus it is safe to make them visible
         // to future read transactions
@@ -689,16 +711,42 @@ impl TransactionalMemory {
         let mut allocated_since_commit = self.allocated_since_commit.lock().unwrap();
         unpersisted.extend(allocated_since_commit.drain());
         allocated_since_commit.shrink_to_fit();
-        self.storage.write_barrier()?;
+        drop(unpersisted);
+        drop(allocated_since_commit);
 
-        let mut state = self.state.lock().unwrap();
-        let secondary = state.header.secondary_slot_mut();
-        secondary.transaction_id = transaction_id;
-        secondary.user_root = data_root;
-        secondary.system_root = system_root;
+        let barrier_start = std::time::Instant::now();
+        self.storage.write_barrier()?;
+        let barrier_time = barrier_start.elapsed();
+        if barrier_time.as_millis() > 5 {
+            eprintln!("[PERF] write_barrier took: {:?}", barrier_time);
+        }
+
+        // CRITICAL OPTIMIZATION: Minimize lock hold time by using lock-free header snapshot
+        // This is the key bottleneck fix for concurrent column family writes
+        let header_lock_start = std::time::Instant::now();
+        let header_update = {
+            let mut state = self.state.lock().unwrap();
+            let secondary = state.header.secondary_slot_mut();
+            secondary.transaction_id = transaction_id;
+            secondary.user_root = data_root;
+            secondary.system_root = system_root;
+            state.header.clone()
+        }; // Lock released here - much faster!
+        let header_lock_time = header_lock_start.elapsed();
+
+        // Update lock-free snapshot outside the lock
+        self.header_snapshot.store(Arc::new(header_update));
 
         // TODO: maybe we can remove this flag and just update the in-memory DatabaseHeader state?
         self.read_from_secondary.store(true, Ordering::Release);
+
+        let total_commit_time = commit_start.elapsed();
+        if total_commit_time.as_millis() > 10 {
+            eprintln!(
+                "[PERF] non_durable_commit total: {:?} (barrier: {:?}, header_lock: {:?})",
+                total_commit_time, barrier_time, header_lock_time
+            );
+        }
 
         Ok(())
     }
@@ -852,44 +900,44 @@ impl TransactionalMemory {
     }
 
     pub(crate) fn get_version(&self) -> u8 {
-        let state = self.state.lock().unwrap();
+        let header = self.header_snapshot.load();
         if self.read_from_secondary.load(Ordering::Acquire) {
-            state.header.secondary_slot().version
+            header.secondary_slot().version
         } else {
-            state.header.primary_slot().version
+            header.primary_slot().version
         }
     }
 
     pub(crate) fn get_data_root(&self) -> Option<BtreeHeader> {
-        let state = self.state.lock().unwrap();
+        let header = self.header_snapshot.load();
         if self.read_from_secondary.load(Ordering::Acquire) {
-            state.header.secondary_slot().user_root
+            header.secondary_slot().user_root
         } else {
-            state.header.primary_slot().user_root
+            header.primary_slot().user_root
         }
     }
 
     pub(crate) fn get_system_root(&self) -> Option<BtreeHeader> {
-        let state = self.state.lock().unwrap();
+        let header = self.header_snapshot.load();
         if self.read_from_secondary.load(Ordering::Acquire) {
-            state.header.secondary_slot().system_root
+            header.secondary_slot().system_root
         } else {
-            state.header.primary_slot().system_root
+            header.primary_slot().system_root
         }
     }
 
     pub(crate) fn get_last_committed_transaction_id(&self) -> Result<TransactionId> {
-        let state = self.state.lock()?;
+        let header = self.header_snapshot.load();
         if self.read_from_secondary.load(Ordering::Acquire) {
-            Ok(state.header.secondary_slot().transaction_id)
+            Ok(header.secondary_slot().transaction_id)
         } else {
-            Ok(state.header.primary_slot().transaction_id)
+            Ok(header.primary_slot().transaction_id)
         }
     }
 
     pub(crate) fn get_last_durable_transaction_id(&self) -> Result<TransactionId> {
-        let state = self.state.lock()?;
-        Ok(state.header.primary_slot().transaction_id)
+        let header = self.header_snapshot.load();
+        Ok(header.primary_slot().transaction_id)
     }
 
     pub(crate) fn free(&self, page: PageNumber, allocated: &mut PageTrackerPolicy) {
@@ -981,7 +1029,12 @@ impl TransactionalMemory {
         let required_pages = allocation_size.div_ceil(self.get_page_size());
         let required_order = ceil_log2(required_pages);
 
+        let lock_start = std::time::Instant::now();
         let mut state = self.state.lock().unwrap();
+        let lock_wait = lock_start.elapsed();
+        if lock_wait.as_millis() > 1 {
+            eprintln!("[PERF] allocate_helper lock wait: {:?}", lock_wait);
+        }
 
         let page_number = if let Some(page_number) =
             Self::allocate_helper_retry(&mut state, required_order, lowest)?

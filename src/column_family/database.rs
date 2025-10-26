@@ -393,6 +393,28 @@ impl ColumnFamilyDatabase {
             self.header_backend.write(0, &header_bytes)?;
             self.header_backend.sync_data()?;
 
+            // PRE-ALLOCATE FILE SPACE for this partition
+            // CRITICAL: This eliminates filesystem metadata update contention
+            // By extending the file to cover all partitions upfront, we avoid:
+            // 1. File extension syscalls during Database writes
+            // 2. Kernel-level serialization on file size changes
+            // 3. Filesystem journal updates
+            let new_file_size = offset + size;
+            let current_file_size = self
+                .header_backend
+                .len()
+                .map_err(|e| ColumnFamilyError::Io(e))?;
+
+            if new_file_size > current_file_size {
+                // Extend file to reserve space for this partition
+                self.header_backend
+                    .set_len(new_file_size)
+                    .map_err(|e| ColumnFamilyError::Io(e))?;
+
+                // Important: Don't sync here - let the OS handle it lazily
+                // This keeps create_column_family() fast
+            }
+
             metadata.segments
         };
 
