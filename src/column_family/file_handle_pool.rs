@@ -69,8 +69,28 @@ impl FileHandlePool {
     ///
     /// An Arc-wrapped `StorageBackend` that the column family can use for I/O operations.
     pub fn acquire(&self, cf_name: &str) -> Result<Arc<dyn StorageBackend>, DatabaseError> {
+        // Fast path: check if already exists (read-only, no eviction needed)
+        {
+            let mut entries = self.entries.lock().unwrap();
+            if let Some(entry) = entries.get_mut(cf_name) {
+                entry.touch();
+                return Ok(entry.backend.clone());
+            }
+        }
+
+        // Slow path: need to open a new file
+        // Open file WITHOUT holding the lock to avoid serializing all threads
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)?;
+
+        let backend: Arc<dyn StorageBackend> = Arc::new(UnlockedFileBackend::new(file)?);
+
+        // Acquire lock only for the insert
         let mut entries = self.entries.lock().unwrap();
 
+        // Double-check: another thread might have inserted while we were opening the file
         if let Some(entry) = entries.get_mut(cf_name) {
             entry.touch();
             return Ok(entry.backend.clone());
@@ -80,14 +100,7 @@ impl FileHandlePool {
             Self::evict_lru(&mut entries, cf_name);
         }
 
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)?;
-
-        let backend: Arc<dyn StorageBackend> = Arc::new(UnlockedFileBackend::new(file)?);
         entries.insert(cf_name.to_string(), PoolEntry::new(backend.clone()));
-
         Ok(backend)
     }
 
@@ -96,10 +109,12 @@ impl FileHandlePool {
     /// This should be called when a column family's `Database` is reused to prevent
     /// premature eviction.
     pub fn touch(&self, cf_name: &str) {
+        // Minimize lock hold time - just update timestamp
         let mut entries = self.entries.lock().unwrap();
         if let Some(entry) = entries.get_mut(cf_name) {
             entry.touch();
         }
+        // Lock released immediately
     }
 
     /// Explicitly releases a column family's file handle.

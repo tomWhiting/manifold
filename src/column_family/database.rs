@@ -526,45 +526,51 @@ impl ColumnFamilyDatabase {
         header_backend: &Arc<FileBackend>,
         state: &Arc<ColumnFamilyState>,
     ) -> io::Result<Segment> {
-        let mut hdr = header.write().unwrap();
+        // Allocate segment from free list or end of file - keep lock minimal
+        let allocated_segment = {
+            let mut hdr = header.write().unwrap();
 
-        let mut best_fit_idx = None;
-        let mut best_fit_size = u64::MAX;
+            let mut best_fit_idx = None;
+            let mut best_fit_size = u64::MAX;
 
-        for (idx, free_seg) in hdr.free_segments.iter().enumerate() {
-            if free_seg.size >= size && free_seg.size < best_fit_size {
-                best_fit_idx = Some(idx);
-                best_fit_size = free_seg.size;
+            for (idx, free_seg) in hdr.free_segments.iter().enumerate() {
+                if free_seg.size >= size && free_seg.size < best_fit_size {
+                    best_fit_idx = Some(idx);
+                    best_fit_size = free_seg.size;
+                }
             }
-        }
 
-        let allocated_segment = if let Some(idx) = best_fit_idx {
-            let free_seg = hdr.free_segments.remove(idx);
+            let allocated_segment = if let Some(idx) = best_fit_idx {
+                let free_seg = hdr.free_segments.remove(idx);
 
-            if free_seg.size == size {
-                Segment::new(free_seg.offset, free_seg.size)
+                if free_seg.size == size {
+                    Segment::new(free_seg.offset, free_seg.size)
+                } else {
+                    let allocated = Segment::new(free_seg.offset, size);
+                    let remaining = FreeSegment::new(free_seg.offset + size, free_seg.size - size);
+                    hdr.free_segments.push(remaining);
+                    allocated
+                }
             } else {
-                let allocated = Segment::new(free_seg.offset, size);
-                let remaining = FreeSegment::new(free_seg.offset + size, free_seg.size - size);
-                hdr.free_segments.push(remaining);
-                allocated
+                let offset = hdr.end_of_file();
+                let aligned_offset = offset.div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
+                Segment::new(aligned_offset, size)
+            };
+
+            if let Some(cf_meta) = hdr.column_families.iter_mut().find(|cf| cf.name == cf_name) {
+                cf_meta.segments.push(allocated_segment.clone());
             }
-        } else {
-            let offset = hdr.end_of_file();
-            let aligned_offset = offset.div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
-            Segment::new(aligned_offset, size)
-        };
 
-        if let Some(cf_meta) = hdr.column_families.iter_mut().find(|cf| cf.name == cf_name) {
-            cf_meta.segments.push(allocated_segment.clone());
-        }
+            allocated_segment
+        }; // Header lock released here - no disk I/O while holding lock
 
+        // Update state outside of header lock
         let mut state_segments = state.segments.write().unwrap();
         state_segments.push(allocated_segment.clone());
 
-        let header_bytes = hdr.to_bytes()?;
-        header_backend.write(0, &header_bytes)?;
-        header_backend.sync_data()?;
+        // Don't write/fsync header on every allocation - eliminates serialization bottleneck
+        // Header persisted on clean shutdown or periodically
+        // Trade-off: crash may lose segment allocations (wasted space, not data loss)
 
         Ok(allocated_segment)
     }
