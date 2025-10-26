@@ -94,7 +94,6 @@ impl ColumnFamilyState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn test_state_creation() {

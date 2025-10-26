@@ -292,17 +292,10 @@ impl WALJournal {
     pub(crate) fn read_from(&self, start_seq: u64) -> io::Result<Vec<WALEntry>> {
         let mut file = self.file.lock().unwrap();
 
-        // Read header to get latest_seq
-        file.seek(SeekFrom::Start(0))?;
-        let mut header_buf = [0u8; WAL_HEADER_SIZE];
-        file.read_exact(&mut header_buf)?;
-        let header = WALHeader::from_bytes(&header_buf)?;
+        // Note: We don't check header.latest_seq here because append() doesn't update
+        // the header (for performance). Instead, we scan the file until EOF.
 
-        if start_seq > header.latest_seq {
-            return Ok(vec![]);
-        }
-
-        // Read entries sequentially from beginning
+        // Skip past header to start of entries
         file.seek(SeekFrom::Start(WAL_HEADER_SIZE as u64))?;
         let mut entries = Vec::new();
 
@@ -368,6 +361,9 @@ impl WALJournal {
     }
 
     /// Reads the WAL header.
+    ///
+    /// Used in tests and diagnostics to inspect WAL state.
+    #[allow(dead_code)]
     pub(crate) fn read_header(&self) -> io::Result<WALHeader> {
         let mut file = self.file.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
@@ -394,6 +390,12 @@ impl WALJournal {
         self.sync()
     }
 
+    /// Updates the header's latest_seq field.
+    ///
+    /// This is intentionally not called during append() for performance reasons.
+    /// Header updates happen only during checkpoint/truncate operations.
+    /// Kept for potential future use in checkpoint optimizations.
+    #[allow(dead_code)]
     fn update_header_latest_seq(&self, file: &mut File, latest_seq: u64) -> io::Result<()> {
         file.seek(SeekFrom::Start(0))?;
         let mut header_buf = [0u8; WAL_HEADER_SIZE];

@@ -11,7 +11,7 @@ use tempfile::NamedTempFile;
 
 const TEST_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("data");
 
-fn benchmark_config(name: &str, pool_size: usize, num_threads: usize) {
+fn benchmark_config(_name: &str, pool_size: usize, num_threads: usize) {
     let data = vec![0u8; 1024];
     let tmpfile = NamedTempFile::new().unwrap();
 
@@ -22,11 +22,7 @@ fn benchmark_config(name: &str, pool_size: usize, num_threads: usize) {
             .unwrap(),
     );
 
-    // Create column families
-    for i in 0..num_threads {
-        db.create_column_family(&format!("cf_{}", i), Some(100 * 1024 * 1024))
-            .unwrap();
-    }
+    // Column families will be auto-created on first access
 
     let start = Instant::now();
     let mut handles = vec![];
@@ -36,8 +32,9 @@ fn benchmark_config(name: &str, pool_size: usize, num_threads: usize) {
         let data_clone = data.clone();
 
         let handle = std::thread::spawn(move || {
+            // Auto-creates CF with default size on first access
             let cf = db_clone
-                .column_family(&format!("cf_{}", thread_id))
+                .column_family_or_create(&format!("cf_{}", thread_id))
                 .unwrap();
 
             for batch in 0..100 {
@@ -89,7 +86,8 @@ fn main() {
     }
 
     println!("\n{}", "=".repeat(80));
-    println!("pool_size=0  → No WAL, direct fsync to database file");
-    println!("pool_size=64 → WAL enabled with group commit batching");
+    println!("Note: Default is pool_size=64 (WAL enabled)");
+    println!("pool_size=0  → No WAL (opt-out via .without_wal())");
+    println!("pool_size=64 → WAL enabled with group commit batching (default)");
     println!("{}", "=".repeat(80));
 }

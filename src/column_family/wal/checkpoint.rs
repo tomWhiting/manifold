@@ -23,8 +23,12 @@ use std::time::Duration;
 /// - WAL size threshold (default: 64 MB)
 /// - Manual checkpoint requests
 pub(crate) struct CheckpointManager {
+    // These fields are accessed via &self references in methods like checkpoint_now()
+    #[allow(dead_code)]
     journal: Arc<WALJournal>,
+    #[allow(dead_code)]
     database: Arc<ColumnFamilyDatabase>,
+    #[allow(dead_code)]
     config: CheckpointConfig,
     pending_sequences: Arc<RwLock<BTreeSet<u64>>>,
     shutdown_signal: Arc<AtomicBool>,
@@ -74,6 +78,10 @@ impl CheckpointManager {
     }
 
     /// Manually triggers a checkpoint (blocks until complete).
+    ///
+    /// This is used in tests and can be used by applications that need
+    /// explicit control over checkpoint timing.
+    #[allow(dead_code)]
     pub(crate) fn checkpoint_now(&self) -> io::Result<()> {
         Self::checkpoint_internal(&self.journal, &self.database, &self.pending_sequences)
     }

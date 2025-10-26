@@ -69,10 +69,6 @@ impl<T> LRUCache<T> {
         }
     }
 
-    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = (&u64, &T)> {
-        self.cache.iter().map(|(k, (v, _))| (k, v))
-    }
-
     pub(crate) fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = (&u64, &mut T)> {
         self.cache.iter_mut().map(|(k, (v, _))| (k, v))
     }

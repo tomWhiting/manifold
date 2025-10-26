@@ -174,11 +174,14 @@ impl TransactionalMemory {
             // File already exists - check the magic number
             if magic_number == MAGICNUMBER {
                 // Valid existing database - proceed with opening
-            } else if magic_number == [0u8; MAGICNUMBER.len()] {
+            } else if magic_number == [0u8; MAGICNUMBER.len()]
+                && initial_storage_len >= DB_HEADER_SIZE as u64
+            {
                 // Zero-filled space (from pre-allocation) - treat as uninitialized
                 // This happens when partition space is pre-allocated but not yet initialized
+                // Only accept this for files large enough to be a database header
             } else {
-                // Non-zero, non-magic data - file is corrupted
+                // Non-zero, non-magic data OR too-short file - file is corrupted
                 return Err(StorageError::Io(ErrorKind::InvalidData.into()).into());
             }
         } else {

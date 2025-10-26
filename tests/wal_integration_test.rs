@@ -1,5 +1,5 @@
+use manifold::TableDefinition;
 use manifold::column_family::ColumnFamilyDatabase;
-use manifold::{Database, TableDefinition};
 use std::fs;
 use tempfile::NamedTempFile;
 
