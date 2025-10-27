@@ -75,9 +75,14 @@ impl ColumnFamilyState {
 
         let backend = pool.acquire(&self.name)?;
         let segments = self.segments.read().unwrap().clone();
+        let file_growth_lock = pool.file_growth_lock();
 
-        let partition_backend =
-            PartitionedStorageBackend::with_segments(backend, segments, Some(expansion_callback));
+        let partition_backend = PartitionedStorageBackend::with_segments(
+            backend,
+            segments,
+            Some(expansion_callback),
+            file_growth_lock,
+        );
 
         let db = Arc::new(Database::builder().create_with_backend(partition_backend)?);
         *db_guard = Some(db.clone());
@@ -103,6 +108,7 @@ impl ColumnFamilyState {
         &self,
         backend: &Arc<dyn StorageBackend>,
         expansion_callback: Arc<dyn Fn(u64) -> io::Result<Segment> + Send + Sync>,
+        file_growth_lock: Arc<std::sync::Mutex<()>>,
     ) -> Result<Arc<Database>, DatabaseError> {
         {
             let db_guard = self.db.read().unwrap();
@@ -123,6 +129,7 @@ impl ColumnFamilyState {
             Arc::clone(backend),
             segments,
             Some(expansion_callback),
+            file_growth_lock,
         );
 
         let db = Arc::new(Database::builder().create_with_backend(partition_backend)?);

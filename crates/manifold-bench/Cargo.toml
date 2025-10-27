@@ -73,3 +73,11 @@ harness = false
 [[bench]]
 name = "cf_write_isolation"
 harness = false
+
+[[bench]]
+name = "read_heavy_benchmark"
+harness = false
+
+[[bench]]
+name = "mixed_workload_benchmark"
+harness = false

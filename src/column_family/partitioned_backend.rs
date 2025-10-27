@@ -2,7 +2,7 @@ use crate::StorageBackend;
 use crate::column_family::header::Segment;
 use std::fmt::{Debug, Formatter};
 use std::io;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// A storage backend that operates on one or more segments within an underlying storage backend.
 ///
@@ -47,6 +47,10 @@ pub struct PartitionedStorageBackend {
     inner: Arc<dyn StorageBackend>,
     segments: Arc<RwLock<Vec<Segment>>>,
     expansion_callback: Option<Arc<dyn Fn(u64) -> io::Result<Segment> + Send + Sync>>,
+    /// Global lock for file growth operations. Shared across all PartitionedStorageBackend
+    /// instances using the same underlying file to prevent race conditions during concurrent
+    /// set_len() calls.
+    file_growth_lock: Arc<Mutex<()>>,
 }
 
 impl PartitionedStorageBackend {
@@ -74,6 +78,7 @@ impl PartitionedStorageBackend {
                 partition_size,
             )])),
             expansion_callback: None,
+            file_growth_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -88,11 +93,13 @@ impl PartitionedStorageBackend {
         inner: Arc<dyn StorageBackend>,
         segments: Vec<Segment>,
         expansion_callback: Option<Arc<dyn Fn(u64) -> io::Result<Segment> + Send + Sync>>,
+        file_growth_lock: Arc<Mutex<()>>,
     ) -> Self {
         Self {
             inner,
             segments: Arc::new(RwLock::new(segments)),
             expansion_callback,
+            file_growth_lock,
         }
     }
 
@@ -216,28 +223,40 @@ impl StorageBackend for PartitionedStorageBackend {
             self.try_expand(allocation_size)?;
         }
 
+        // CRITICAL SECTION: Calculate physical size and grow file atomically
         // Calculate the maximum physical end we need to allocate
-        let segments = self.segments.read().unwrap();
-        let mut remaining = len;
-        let mut max_physical_end = 0u64;
+        let max_physical_end = {
+            let segments = self.segments.read().unwrap();
+            let mut remaining = len;
+            let mut max_physical_end = 0u64;
 
-        for segment in segments.iter() {
-            if remaining == 0 {
-                break;
+            for segment in segments.iter() {
+                if remaining == 0 {
+                    break;
+                }
+
+                let used_in_segment = remaining.min(segment.size);
+                let physical_end = segment.offset + used_in_segment;
+                max_physical_end = max_physical_end.max(physical_end);
+
+                remaining = remaining.saturating_sub(used_in_segment);
             }
 
-            let used_in_segment = remaining.min(segment.size);
-            let physical_end = segment.offset + used_in_segment;
-            max_physical_end = max_physical_end.max(physical_end);
+            max_physical_end
+        };
 
-            remaining = remaining.saturating_sub(used_in_segment);
-        }
+        // CRITICAL: Serialize file growth across all column families sharing this file
+        // Multiple PartitionedStorageBackend instances may wrap the same file via different
+        // FileBackend handles from the pool. Without this lock, concurrent set_len() calls
+        // can race, causing assertion failures where header claims file is larger than actual.
+        let _growth_lock = self.file_growth_lock.lock().unwrap();
 
         // Only grow the underlying storage if needed (no-shrink policy)
         let current_underlying_len = self.inner.len()?;
         if max_physical_end > current_underlying_len {
             self.inner.set_len(max_physical_end)?;
         }
+        // Lock released here - file growth complete
 
         Ok(())
     }
@@ -498,7 +517,12 @@ mod tests {
             Segment::new(10000, 1000), // Virtual 2000-3000 -> Physical 10000-11000
         ];
 
-        let backend = PartitionedStorageBackend::with_segments(inner.clone(), segments, None);
+        let backend = PartitionedStorageBackend::with_segments(
+            inner.clone(),
+            segments,
+            None,
+            Arc::new(Mutex::new(())),
+        );
         backend.set_len(3000).unwrap();
 
         // Write data that spans multiple segments
@@ -543,7 +567,12 @@ mod tests {
             Segment::new(10000, 512),
         ];
 
-        let backend = PartitionedStorageBackend::with_segments(inner, segments, None);
+        let backend = PartitionedStorageBackend::with_segments(
+            inner,
+            segments,
+            None,
+            Arc::new(Mutex::new(())),
+        );
         assert_eq!(backend.total_size(), 1024 + 2048 + 512);
     }
 
@@ -553,7 +582,12 @@ mod tests {
 
         let segments = vec![Segment::new(4096, 1000), Segment::new(8192, 500)];
 
-        let backend = PartitionedStorageBackend::with_segments(inner, segments, None);
+        let backend = PartitionedStorageBackend::with_segments(
+            inner,
+            segments,
+            None,
+            Arc::new(Mutex::new(())),
+        );
 
         // Virtual offset 0 -> Physical 4096
         let (phys, rem) = backend.virtual_to_physical(0).unwrap();

@@ -162,6 +162,8 @@ pub struct ColumnFamilyDatabase {
     header_backend: Arc<dyn StorageBackend>,
     #[cfg(target_arch = "wasm32")]
     file_name: String,
+    #[cfg(target_arch = "wasm32")]
+    file_growth_lock: Arc<std::sync::Mutex<()>>,
     column_families: Arc<RwLock<HashMap<String, Arc<ColumnFamilyState>>>>,
     header: Arc<RwLock<MasterHeader>>,
     wal_journal: Option<Arc<WALJournal>>,
@@ -296,6 +298,7 @@ impl ColumnFamilyDatabase {
         Ok(Self {
             file_name,
             header_backend: backend,
+            file_growth_lock: Arc::new(std::sync::Mutex::new(())),
             column_families: Arc::new(RwLock::new(column_families)),
             header,
             wal_journal,
@@ -592,6 +595,7 @@ impl ColumnFamilyDatabase {
                 backend: self.header_backend.clone(),
                 header: self.header.clone(),
                 header_backend: self.header_backend.clone(),
+                file_growth_lock: self.file_growth_lock.clone(),
                 wal_journal: self.wal_journal.clone(),
                 checkpoint_manager: self.checkpoint_manager.clone(),
             })
@@ -631,6 +635,7 @@ impl ColumnFamilyDatabase {
                         backend: self.header_backend.clone(),
                         header: self.header.clone(),
                         header_backend: self.header_backend.clone(),
+                        file_growth_lock: self.file_growth_lock.clone(),
                         wal_journal: self.wal_journal.clone(),
                         checkpoint_manager: self.checkpoint_manager.clone(),
                     })
@@ -966,6 +971,8 @@ pub struct ColumnFamily {
     header_backend: Arc<dyn StorageBackend>,
     #[cfg(target_arch = "wasm32")]
     backend: Arc<dyn StorageBackend>,
+    #[cfg(target_arch = "wasm32")]
+    file_growth_lock: Arc<std::sync::Mutex<()>>,
     header: Arc<RwLock<MasterHeader>>,
     wal_journal: Option<Arc<WALJournal>>,
     checkpoint_manager: Option<Arc<CheckpointManager>>,
@@ -1063,8 +1070,11 @@ impl ColumnFamily {
             )
         });
 
-        self.state
-            .ensure_database_wasm(&self.backend, expansion_callback)
+        self.state.ensure_database_wasm(
+            &self.backend,
+            expansion_callback,
+            self.file_growth_lock.clone(),
+        )
     }
 }
 
