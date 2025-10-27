@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use super::database::ColumnFamilyDatabase;
@@ -21,10 +22,12 @@ const DEFAULT_POOL_SIZE: usize = 64;
 ///     .pool_size(64)
 ///     .open("my_database.manifold")?;
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ColumnFamilyDatabaseBuilder {
     pool_size: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ColumnFamilyDatabaseBuilder {
     /// Creates a new builder with default settings.
     pub fn new() -> Self {
@@ -87,6 +90,7 @@ impl ColumnFamilyDatabaseBuilder {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for ColumnFamilyDatabaseBuilder {
     fn default() -> Self {
         Self::new()

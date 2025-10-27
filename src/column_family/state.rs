@@ -1,12 +1,14 @@
 use std::io;
-use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use crate::{Database, DatabaseError};
+use crate::{Database, DatabaseError, StorageBackend};
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::file_handle_pool::FileHandlePool;
 use super::header::Segment;
 use super::partitioned_backend::PartitionedStorageBackend;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 
 /// Internal state for a column family, supporting lazy Database initialization.
 ///
@@ -32,7 +34,7 @@ impl ColumnFamilyState {
         }
     }
 
-    /// Ensures the Database instance exists, creating it if necessary.
+    /// Ensures the Database instance exists, creating it if necessary (native platforms).
     ///
     /// This acquires a file handle from the pool and initializes the Database
     /// on first call. Subsequent calls reuse the cached instance and touch the
@@ -47,6 +49,7 @@ impl ColumnFamilyState {
     /// # Returns
     ///
     /// An Arc-wrapped Database instance ready for use.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn ensure_database(
         &self,
         pool: &FileHandlePool,
@@ -73,6 +76,52 @@ impl ColumnFamilyState {
 
         let partition_backend =
             PartitionedStorageBackend::with_segments(backend, segments, Some(expansion_callback));
+
+        let db = Arc::new(Database::builder().create_with_backend(partition_backend)?);
+        *db_guard = Some(db.clone());
+
+        Ok(db)
+    }
+
+    /// Ensures the Database instance exists, creating it if necessary (WASM).
+    ///
+    /// This creates a Database using the provided WASM backend on first call.
+    /// Subsequent calls reuse the cached instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `backend` - WASM storage backend to use
+    /// * `expansion_callback` - Callback to request new segments when needed
+    ///
+    /// # Returns
+    ///
+    /// An Arc-wrapped Database instance ready for use.
+    #[cfg(target_arch = "wasm32")]
+    pub fn ensure_database_wasm(
+        &self,
+        backend: &Arc<dyn StorageBackend>,
+        expansion_callback: Arc<dyn Fn(u64) -> io::Result<Segment> + Send + Sync>,
+    ) -> Result<Arc<Database>, DatabaseError> {
+        {
+            let db_guard = self.db.read().unwrap();
+            if let Some(db) = db_guard.as_ref() {
+                return Ok(db.clone());
+            }
+        }
+
+        let mut db_guard = self.db.write().unwrap();
+
+        if let Some(db) = db_guard.as_ref() {
+            return Ok(db.clone());
+        }
+
+        let segments = self.segments.read().unwrap().clone();
+
+        let partition_backend = PartitionedStorageBackend::with_segments(
+            Arc::clone(backend),
+            segments,
+            Some(expansion_callback),
+        );
 
         let db = Arc::new(Database::builder().create_with_backend(partition_backend)?);
         *db_guard = Some(db.clone());

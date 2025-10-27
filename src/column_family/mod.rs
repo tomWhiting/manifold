@@ -58,6 +58,7 @@ pub(crate) mod state;
 pub(crate) mod unlocked_backend;
 pub(crate) mod wal;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use builder::ColumnFamilyDatabaseBuilder;
 pub use database::{ColumnFamily, ColumnFamilyDatabase, ColumnFamilyError};
 #[cfg(not(target_arch = "wasm32"))]

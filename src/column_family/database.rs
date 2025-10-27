@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+#[cfg(target_arch = "wasm32")]
+use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::backends::FileBackend;
 use crate::db::ReadableDatabase;
 use crate::tree_store::BtreeHeader;
@@ -12,7 +16,9 @@ use crate::{
     WriteTransaction,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::builder::ColumnFamilyDatabaseBuilder;
+#[cfg(not(target_arch = "wasm32"))]
 use super::file_handle_pool::FileHandlePool;
 use super::header::{ColumnFamilyMetadata, FreeSegment, MasterHeader, PAGE_SIZE, Segment};
 use super::state::ColumnFamilyState;
@@ -146,9 +152,16 @@ impl From<io::Error> for ColumnFamilyError {
 ///     .open("my.db")?;
 /// ```
 pub struct ColumnFamilyDatabase {
+    #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
+    #[cfg(not(target_arch = "wasm32"))]
     header_backend: Arc<FileBackend>,
+    #[cfg(not(target_arch = "wasm32"))]
     handle_pool: Arc<FileHandlePool>,
+    #[cfg(target_arch = "wasm32")]
+    header_backend: Arc<dyn StorageBackend>,
+    #[cfg(target_arch = "wasm32")]
+    file_name: String,
     column_families: Arc<RwLock<HashMap<String, Arc<ColumnFamilyState>>>>,
     header: Arc<RwLock<MasterHeader>>,
     wal_journal: Option<Arc<WALJournal>>,
@@ -177,6 +190,7 @@ impl ColumnFamilyDatabase {
     ///     .without_wal()
     ///     .open("my.db")?;
     /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn builder() -> ColumnFamilyDatabaseBuilder {
         ColumnFamilyDatabaseBuilder::new()
     }
@@ -203,11 +217,98 @@ impl ColumnFamilyDatabase {
     /// # Errors
     ///
     /// Returns an error if the file cannot be opened or the header is invalid.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         Self::builder().open(path)
     }
 
-    /// Internal implementation of open, called by the builder.
+    /// Opens or creates a column family database with a WASM backend.
+    ///
+    /// This is the WASM-specific initialization that accepts a `WasmStorageBackend`
+    /// instead of a file path.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_name` - Name of the OPFS file (for identification in errors)
+    /// * `backend` - The WASM storage backend to use
+    /// * `pool_size` - WAL pool size (0 to disable WAL)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifold::wasm::WasmStorageBackend;
+    /// use manifold::column_family::ColumnFamilyDatabase;
+    ///
+    /// // In a Web Worker context:
+    /// let backend = WasmStorageBackend::new("my-database.db").await?;
+    /// let db = ColumnFamilyDatabase::open_with_backend(
+    ///     "my-database.db",
+    ///     Arc::new(backend),
+    ///     64, // WAL enabled
+    /// )?;
+    /// ```
+    #[cfg(target_arch = "wasm32")]
+    pub fn open_with_backend(
+        file_name: impl Into<String>,
+        backend: Arc<dyn StorageBackend>,
+        pool_size: usize,
+    ) -> Result<Self, DatabaseError> {
+        let file_name = file_name.into();
+
+        let is_new = backend
+            .len()
+            .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?
+            == 0;
+
+        let header = if is_new {
+            let header = MasterHeader::new();
+            let header_bytes = header
+                .to_bytes()
+                .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+
+            backend
+                .write(0, &header_bytes)
+                .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+            backend
+                .sync_data()
+                .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+
+            header
+        } else {
+            let mut header_bytes = vec![0u8; PAGE_SIZE];
+            backend
+                .read(0, &mut header_bytes)
+                .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+
+            MasterHeader::from_bytes(&header_bytes)
+                .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?
+        };
+
+        let header = Arc::new(RwLock::new(header));
+
+        let mut column_families = HashMap::new();
+        for cf_meta in &header.read().unwrap().column_families {
+            let state = ColumnFamilyState::new(cf_meta.name.clone(), cf_meta.segments.clone());
+            column_families.insert(cf_meta.name.clone(), Arc::new(state));
+        }
+
+        // Note: WAL not yet implemented for WASM - ignore pool_size for now
+        let _ = pool_size;
+        let wal_journal = None;
+        let checkpoint_manager = None;
+
+        Ok(Self {
+            file_name,
+            header_backend: backend,
+            column_families: Arc::new(RwLock::new(column_families)),
+            header,
+            wal_journal,
+            checkpoint_manager,
+        })
+    }
+
+    /// Internal implementation of open, called by the builder (native platforms).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_with_builder(
         path: PathBuf,
         pool_size: usize,
@@ -337,25 +438,26 @@ impl ColumnFamilyDatabase {
                 // Sync all column families to persist recovery
                 for cf_name in temp_db.list_column_families() {
                     if let Ok(cf) = temp_db.column_family(&cf_name)
-                        && let Ok(cf_db) = cf.ensure_database() {
-                            // Commit an empty transaction with durability to fsync
-                            let mut txn = cf_db.begin_write().map_err(|e| {
+                        && let Ok(cf_db) = cf.ensure_database()
+                    {
+                        // Commit an empty transaction with durability to fsync
+                        let mut txn = cf_db.begin_write().map_err(|e| {
+                            DatabaseError::Storage(StorageError::from(io::Error::other(format!(
+                                "recovery fsync begin_write failed: {e}"
+                            ))))
+                        })?;
+                        txn.set_durability(crate::Durability::Immediate)
+                            .map_err(|e| {
                                 DatabaseError::Storage(StorageError::from(io::Error::other(
-                                    format!("recovery fsync begin_write failed: {e}"),
+                                    format!("recovery set_durability failed: {e}"),
                                 )))
                             })?;
-                            txn.set_durability(crate::Durability::Immediate)
-                                .map_err(|e| {
-                                    DatabaseError::Storage(StorageError::from(io::Error::other(
-                                        format!("recovery set_durability failed: {e}"),
-                                    )))
-                                })?;
-                            txn.commit().map_err(|e| {
-                                DatabaseError::Storage(StorageError::from(io::Error::other(
-                                    format!("recovery commit failed: {e}"),
-                                )))
-                            })?;
-                        }
+                        txn.commit().map_err(|e| {
+                            DatabaseError::Storage(StorageError::from(io::Error::other(format!(
+                                "recovery commit failed: {e}"
+                            ))))
+                        })?;
+                    }
                 }
 
                 // Truncate WAL after successful recovery
@@ -437,7 +539,7 @@ impl ColumnFamilyDatabase {
             return Err(ColumnFamilyError::AlreadyExists(name));
         }
 
-        let segments = {
+        let (segments, cf_name) = {
             let mut header = self.header.write().unwrap();
             let offset = header.end_of_file();
             let metadata = ColumnFamilyMetadata::new(name.clone(), offset, size);
@@ -455,10 +557,7 @@ impl ColumnFamilyDatabase {
             // 2. Kernel-level serialization on file size changes
             // 3. Filesystem journal updates
             let new_file_size = offset + size;
-            let current_file_size = self
-                .header_backend
-                .len()
-                .map_err(ColumnFamilyError::Io)?;
+            let current_file_size = self.header_backend.len().map_err(ColumnFamilyError::Io)?;
 
             if new_file_size > current_file_size {
                 // Extend file to reserve space for this partition
@@ -470,52 +569,37 @@ impl ColumnFamilyDatabase {
                 // This keeps create_column_family() fast
             }
 
-            metadata.segments
+            (metadata.segments, metadata.name.clone())
         };
 
         let state = Arc::new(ColumnFamilyState::new(name.clone(), segments));
+        cfs.insert(name.clone(), Arc::clone(&state));
 
-        let cf_name = name.clone();
-        let cf_name_for_callback = cf_name.clone();
-        let header_clone = self.header.clone();
-        let header_backend_clone = self.header_backend.clone();
-
-        let state_clone = state.clone();
-
-        let expansion_callback = Arc::new(move |requested_size: u64| -> io::Result<Segment> {
-            Self::allocate_segment_internal(
-                &cf_name_for_callback,
-                requested_size,
-                &header_clone,
-                &header_backend_clone,
-                &state_clone,
-            )
-        });
-
-        state
-            .ensure_database(&self.handle_pool, &self.path, expansion_callback)
-            .map_err(|e| match e {
-                DatabaseError::Storage(StorageError::Io(io_err)) => ColumnFamilyError::Io(io_err),
-                DatabaseError::Storage(s) => {
-                    ColumnFamilyError::Io(io::Error::other(format!("storage error: {s}")))
-                }
-                _ => ColumnFamilyError::Io(io::Error::other(format!(
-                    "failed to initialize column family: {e}"
-                ))),
-            })?;
-
-        cfs.insert(name.clone(), state.clone());
-
-        Ok(ColumnFamily {
-            name: cf_name.clone(),
-            state,
-            pool: self.handle_pool.clone(),
-            path: self.path.clone(),
-            header: self.header.clone(),
-            header_backend: self.header_backend.clone(),
-            wal_journal: self.wal_journal.clone(),
-            checkpoint_manager: self.checkpoint_manager.clone(),
-        })
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Ok(ColumnFamily {
+                name: cf_name,
+                state,
+                pool: self.handle_pool.clone(),
+                path: self.path.clone(),
+                header: self.header.clone(),
+                header_backend: self.header_backend.clone(),
+                wal_journal: self.wal_journal.clone(),
+                checkpoint_manager: self.checkpoint_manager.clone(),
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(ColumnFamily {
+                name: cf_name,
+                state,
+                backend: self.header_backend.clone(),
+                header: self.header.clone(),
+                header_backend: self.header_backend.clone(),
+                wal_journal: self.wal_journal.clone(),
+                checkpoint_manager: self.checkpoint_manager.clone(),
+            })
+        }
     }
 
     /// Retrieves a handle to an existing column family.
@@ -529,16 +613,33 @@ impl ColumnFamilyDatabase {
         let cfs = self.column_families.read().unwrap();
 
         match cfs.get(name) {
-            Some(state) => Ok(ColumnFamily {
-                name: name.to_string(),
-                state: state.clone(),
-                pool: self.handle_pool.clone(),
-                path: self.path.clone(),
-                header: self.header.clone(),
-                header_backend: self.header_backend.clone(),
-                wal_journal: self.wal_journal.clone(),
-                checkpoint_manager: self.checkpoint_manager.clone(),
-            }),
+            Some(state) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    Ok(ColumnFamily {
+                        name: name.to_string(),
+                        state: state.clone(),
+                        pool: self.handle_pool.clone(),
+                        path: self.path.clone(),
+                        header: self.header.clone(),
+                        header_backend: self.header_backend.clone(),
+                        wal_journal: self.wal_journal.clone(),
+                        checkpoint_manager: self.checkpoint_manager.clone(),
+                    })
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    Ok(ColumnFamily {
+                        name: name.to_string(),
+                        state: state.clone(),
+                        backend: self.header_backend.clone(),
+                        header: self.header.clone(),
+                        header_backend: self.header_backend.clone(),
+                        wal_journal: self.wal_journal.clone(),
+                        checkpoint_manager: self.checkpoint_manager.clone(),
+                    })
+                }
+            }
             None => Err(ColumnFamilyError::NotFound(name.to_string())),
         }
     }
@@ -571,16 +672,31 @@ impl ColumnFamilyDatabase {
         {
             let cfs = self.column_families.read().unwrap();
             if let Some(state) = cfs.get(name) {
-                return Ok(ColumnFamily {
-                    name: name.to_string(),
-                    state: state.clone(),
-                    pool: self.handle_pool.clone(),
-                    path: self.path.clone(),
-                    header: self.header.clone(),
-                    header_backend: self.header_backend.clone(),
-                    wal_journal: self.wal_journal.clone(),
-                    checkpoint_manager: self.checkpoint_manager.clone(),
-                });
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    return Ok(ColumnFamily {
+                        name: name.to_string(),
+                        state: state.clone(),
+                        pool: self.handle_pool.clone(),
+                        path: self.path.clone(),
+                        header: self.header.clone(),
+                        header_backend: self.header_backend.clone(),
+                        wal_journal: self.wal_journal.clone(),
+                        checkpoint_manager: self.checkpoint_manager.clone(),
+                    });
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    return Ok(ColumnFamily {
+                        name: name.to_string(),
+                        state: state.clone(),
+                        backend: self.header_backend.clone(),
+                        header: self.header.clone(),
+                        header_backend: self.header_backend.clone(),
+                        wal_journal: self.wal_journal.clone(),
+                        checkpoint_manager: self.checkpoint_manager.clone(),
+                    });
+                }
             }
         }
 
@@ -598,9 +714,16 @@ impl ColumnFamilyDatabase {
             .collect()
     }
 
-    /// Returns the path to the database file.
+    /// Returns the path to the database file (native platforms).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Returns the file name (WASM).
+    #[cfg(target_arch = "wasm32")]
+    pub fn file_name(&self) -> &str {
+        &self.file_name
     }
 
     /// Deletes a column family and adds its segments to the free list for reuse.
@@ -640,7 +763,8 @@ impl ColumnFamilyDatabase {
         Ok(())
     }
 
-    /// Internal segment allocation function used by expansion callbacks.
+    /// Internal segment allocation function used by expansion callbacks (native platforms).
+    #[cfg(not(target_arch = "wasm32"))]
     fn allocate_segment_internal(
         cf_name: &str,
         size: u64,
@@ -696,6 +820,60 @@ impl ColumnFamilyDatabase {
 
         Ok(allocated_segment)
     }
+
+    /// Internal segment allocation function used by expansion callbacks (WASM).
+    #[cfg(target_arch = "wasm32")]
+    fn allocate_segment_internal(
+        cf_name: &str,
+        size: u64,
+        header: &Arc<RwLock<MasterHeader>>,
+        _header_backend: &Arc<dyn StorageBackend>,
+        state: &Arc<ColumnFamilyState>,
+    ) -> io::Result<Segment> {
+        // Allocate segment from free list or end of file - keep lock minimal
+        let allocated_segment = {
+            let mut hdr = header.write().unwrap();
+
+            let mut best_fit_idx = None;
+            let mut best_fit_size = u64::MAX;
+
+            for (idx, free_seg) in hdr.free_segments.iter().enumerate() {
+                if free_seg.size >= size && free_seg.size < best_fit_size {
+                    best_fit_idx = Some(idx);
+                    best_fit_size = free_seg.size;
+                }
+            }
+
+            let allocated_segment = if let Some(idx) = best_fit_idx {
+                let free_seg = hdr.free_segments.remove(idx);
+
+                if free_seg.size == size {
+                    Segment::new(free_seg.offset, free_seg.size)
+                } else {
+                    let allocated = Segment::new(free_seg.offset, size);
+                    let remaining = FreeSegment::new(free_seg.offset + size, free_seg.size - size);
+                    hdr.free_segments.push(remaining);
+                    allocated
+                }
+            } else {
+                let offset = hdr.end_of_file();
+                let aligned_offset = offset.div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
+                Segment::new(aligned_offset, size)
+            };
+
+            if let Some(cf_meta) = hdr.column_families.iter_mut().find(|cf| cf.name == cf_name) {
+                cf_meta.segments.push(allocated_segment.clone());
+            }
+
+            allocated_segment
+        }; // Header lock released here
+
+        // Update segments in state
+        let mut segments = state.segments.write().unwrap();
+        segments.push(allocated_segment.clone());
+
+        Ok(allocated_segment)
+    }
 }
 
 /// A handle to a column family within a [`ColumnFamilyDatabase`].
@@ -707,10 +885,17 @@ impl ColumnFamilyDatabase {
 pub struct ColumnFamily {
     name: String,
     state: Arc<ColumnFamilyState>,
+    #[cfg(not(target_arch = "wasm32"))]
     pool: Arc<FileHandlePool>,
+    #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
-    header: Arc<RwLock<MasterHeader>>,
+    #[cfg(not(target_arch = "wasm32"))]
     header_backend: Arc<FileBackend>,
+    #[cfg(target_arch = "wasm32")]
+    header_backend: Arc<dyn StorageBackend>,
+    #[cfg(target_arch = "wasm32")]
+    backend: Arc<dyn StorageBackend>,
+    header: Arc<RwLock<MasterHeader>>,
     wal_journal: Option<Arc<WALJournal>>,
     checkpoint_manager: Option<Arc<CheckpointManager>>,
 }
@@ -765,7 +950,8 @@ impl ColumnFamily {
         db.begin_read()
     }
 
-    /// Ensures the Database instance exists, creating it if necessary.
+    /// Ensures the Database instance exists, creating it if necessary (native platforms).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn ensure_database(&self) -> Result<Arc<Database>, DatabaseError> {
         let name = self.name.clone();
         let header = self.header.clone();
@@ -786,6 +972,28 @@ impl ColumnFamily {
         self.state
             .ensure_database(&self.pool, &self.path, expansion_callback)
     }
+
+    /// Ensures the Database instance exists, creating it if necessary (WASM).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn ensure_database(&self) -> Result<Arc<Database>, DatabaseError> {
+        let name = self.name.clone();
+        let header = self.header.clone();
+        let header_backend = self.header_backend.clone();
+        let state = self.state.clone();
+
+        let expansion_callback = Arc::new(move |requested_size: u64| -> io::Result<Segment> {
+            ColumnFamilyDatabase::allocate_segment_internal(
+                &name,
+                requested_size,
+                &header,
+                &header_backend,
+                &state,
+            )
+        });
+
+        self.state
+            .ensure_database_wasm(&self.backend, expansion_callback)
+    }
 }
 
 impl Drop for ColumnFamilyDatabase {
@@ -800,7 +1008,16 @@ impl Drop for ColumnFamilyDatabase {
             // will handle shutdown when they're dropped
         }
 
-        // Close the header backend to release the file lock
-        let _ = self.header_backend.close();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Close the header backend to release the file lock
+            let _ = self.header_backend.close();
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Close the header backend (WASM/OPFS)
+            let _ = self.header_backend.close();
+        }
     }
 }
