@@ -7,8 +7,10 @@ use std::collections::BTreeSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread::{self, JoinHandle};
 
 /// Manages background checkpointing of WAL entries to the main database.
 ///
@@ -32,11 +34,13 @@ pub(crate) struct CheckpointManager {
     config: CheckpointConfig,
     pending_sequences: Arc<RwLock<BTreeSet<u64>>>,
     shutdown_signal: Arc<AtomicBool>,
+    #[cfg(not(target_arch = "wasm32"))]
     checkpoint_thread: Option<JoinHandle<()>>,
 }
 
 impl CheckpointManager {
     /// Creates and starts the checkpoint manager.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start(
         journal: Arc<WALJournal>,
         database: Arc<ColumnFamilyDatabase>,
@@ -71,6 +75,42 @@ impl CheckpointManager {
         }
     }
 
+    /// Creates and starts the checkpoint manager (WASM version with async).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn start(
+        journal: Arc<WALJournal>,
+        database: Arc<ColumnFamilyDatabase>,
+        config: CheckpointConfig,
+    ) -> Self {
+        let pending_sequences = Arc::new(RwLock::new(BTreeSet::new()));
+        let shutdown_signal = Arc::new(AtomicBool::new(false));
+
+        let task_journal = Arc::clone(&journal);
+        let task_database = Arc::clone(&database);
+        let task_config = config.clone();
+        let task_pending = Arc::clone(&pending_sequences);
+        let task_shutdown = Arc::clone(&shutdown_signal);
+
+        wasm_bindgen_futures::spawn_local(async move {
+            Self::checkpoint_loop_async(
+                task_journal,
+                task_database,
+                task_config,
+                task_pending,
+                task_shutdown,
+            )
+            .await;
+        });
+
+        Self {
+            journal,
+            database,
+            config,
+            pending_sequences,
+            shutdown_signal,
+        }
+    }
+
     /// Registers a transaction sequence number as pending checkpoint.
     pub(crate) fn register_pending(&self, sequence: u64) {
         let mut pending = self.pending_sequences.write().unwrap();
@@ -87,6 +127,7 @@ impl CheckpointManager {
     }
 
     /// Shuts down the checkpoint thread gracefully.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn shutdown(mut self) -> io::Result<()> {
         self.shutdown_signal.store(true, Ordering::Release);
 
@@ -99,7 +140,17 @@ impl CheckpointManager {
         Ok(())
     }
 
-    /// Background checkpoint loop.
+    /// Shuts down the checkpoint task gracefully (WASM version).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn shutdown(self) -> io::Result<()> {
+        self.shutdown_signal.store(true, Ordering::Release);
+        // WASM async task will see shutdown signal and exit
+        // No join needed - task cleanup handled by JavaScript runtime
+        Ok(())
+    }
+
+    /// Background checkpoint loop (native version).
+    #[cfg(not(target_arch = "wasm32"))]
     fn checkpoint_loop(
         journal: Arc<WALJournal>,
         database: Arc<ColumnFamilyDatabase>,
@@ -146,6 +197,59 @@ impl CheckpointManager {
         }
     }
 
+    /// Background checkpoint loop (WASM async version).
+    #[cfg(target_arch = "wasm32")]
+    async fn checkpoint_loop_async(
+        journal: Arc<WALJournal>,
+        database: Arc<ColumnFamilyDatabase>,
+        config: CheckpointConfig,
+        pending_sequences: Arc<RwLock<BTreeSet<u64>>>,
+        shutdown_signal: Arc<AtomicBool>,
+    ) {
+        // Track last checkpoint time using a counter (Instant not available in WASM)
+        let mut iterations_since_checkpoint = 0;
+        let check_interval_ms = 100;
+        let iterations_per_checkpoint =
+            (config.interval.as_millis() / check_interval_ms as u128) as usize;
+
+        loop {
+            // Sleep for short interval
+            gloo_timers::future::TimeoutFuture::new(check_interval_ms as u32).await;
+
+            if shutdown_signal.load(Ordering::Acquire) {
+                // Perform final checkpoint before shutdown
+                let _ = Self::checkpoint_internal(&journal, &database, &pending_sequences);
+                break;
+            }
+
+            iterations_since_checkpoint += 1;
+
+            // Check if checkpoint is needed
+            let should_checkpoint = {
+                // Time-based trigger (iteration count)
+                let time_elapsed = iterations_since_checkpoint >= iterations_per_checkpoint;
+
+                // Size-based trigger
+                let wal_size = journal.file_size().unwrap_or(0);
+                let size_exceeded = wal_size >= config.max_wal_size;
+
+                time_elapsed || size_exceeded
+            };
+
+            if should_checkpoint {
+                match Self::checkpoint_internal(&journal, &database, &pending_sequences) {
+                    Ok(()) => {
+                        iterations_since_checkpoint = 0;
+                    }
+                    Err(_e) => {
+                        // Continue running - retry on next interval
+                        // Can't use eprintln in WASM, errors logged elsewhere
+                    }
+                }
+            }
+        }
+    }
+
     /// Performs a checkpoint operation.
     fn checkpoint_internal(
         journal: &Arc<WALJournal>,
@@ -182,25 +286,21 @@ impl CheckpointManager {
         // This ensures the main database is durable before we truncate the WAL
         for cf_name in database.list_column_families() {
             if let Ok(cf) = database.column_family(&cf_name)
-                && let Ok(db) = cf.ensure_database() {
-                    // Sync the database to persist checkpoint changes
-                    // We access the underlying storage through a write transaction
-                    // that we immediately commit with durability
-                    let mut txn = db.begin_write().map_err(|e| {
-                        io::Error::other(format!("begin write failed: {e}"))
-                    })?;
+                && let Ok(db) = cf.ensure_database()
+            {
+                // Sync the database to persist checkpoint changes
+                // We access the underlying storage through a write transaction
+                // that we immediately commit with durability
+                let mut txn = db
+                    .begin_write()
+                    .map_err(|e| io::Error::other(format!("begin write failed: {e}")))?;
 
-                    txn.set_durability(crate::Durability::Immediate)
-                        .map_err(|e| {
-                            io::Error::other(
-                                format!("set durability failed: {e}"),
-                            )
-                        })?;
+                txn.set_durability(crate::Durability::Immediate)
+                    .map_err(|e| io::Error::other(format!("set durability failed: {e}")))?;
 
-                    txn.commit().map_err(|e| {
-                        io::Error::other(format!("commit failed: {e}"))
-                    })?;
-                }
+                txn.commit()
+                    .map_err(|e| io::Error::other(format!("commit failed: {e}")))?;
+            }
         }
 
         // Truncate WAL and reset sequence counter
@@ -226,11 +326,9 @@ impl CheckpointManager {
         })?;
 
         // Get the underlying Database instance
-        let db = cf.ensure_database().map_err(|e| {
-            io::Error::other(
-                format!("failed to access database: {e}"),
-            )
-        })?;
+        let db = cf
+            .ensure_database()
+            .map_err(|e| io::Error::other(format!("failed to access database: {e}")))?;
 
         // Get the TransactionalMemory
         let mem = db.get_memory();
@@ -260,16 +358,13 @@ impl CheckpointManager {
             system_root,
             crate::transaction_tracker::TransactionId::new(entry.transaction_id),
         )
-        .map_err(|e| {
-            io::Error::other(
-                format!("apply_wal_transaction failed: {e}"),
-            )
-        })?;
+        .map_err(|e| io::Error::other(format!("apply_wal_transaction failed: {e}")))?;
 
         Ok(())
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for CheckpointManager {
     fn drop(&mut self) {
         // Signal shutdown
@@ -279,6 +374,15 @@ impl Drop for CheckpointManager {
         if let Some(handle) = self.checkpoint_thread.take() {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for CheckpointManager {
+    fn drop(&mut self) {
+        // Signal shutdown for async task
+        self.shutdown_signal.store(true, Ordering::Release);
+        // WASM async task will see shutdown signal and exit
     }
 }
 
@@ -297,7 +401,7 @@ mod tests {
 
         let db = Arc::new(
             ColumnFamilyDatabase::builder()
-                .pool_size(1)
+                .pool_size(0) // Disable automatic WAL so we can create our own for testing
                 .open(&db_path)
                 .unwrap(),
         );
@@ -321,7 +425,7 @@ mod tests {
 
         let db = Arc::new(
             ColumnFamilyDatabase::builder()
-                .pool_size(1)
+                .pool_size(0) // Disable automatic WAL so we can create our own for testing
                 .open(&db_path)
                 .unwrap(),
         );
@@ -358,7 +462,7 @@ mod tests {
 
         let db = Arc::new(
             ColumnFamilyDatabase::builder()
-                .pool_size(1)
+                .pool_size(0) // Disable automatic WAL so we can create our own for testing
                 .open(&db_path)
                 .unwrap(),
         );

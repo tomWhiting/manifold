@@ -1,6 +1,11 @@
 use super::entry::WALEntry;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use crate::StorageBackend;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::tree_store::file_backend::FileBackend;
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::OpenOptions;
+use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -34,12 +39,14 @@ const GROUP_COMMIT_WINDOW_MICROS: u64 = 0;
 /// Single transaction: ~200-300 ops/sec (limited by fsync ~3-5ms)
 /// Concurrent transactions: 30-50K+ ops/sec (20-200 txns batched per fsync)
 pub(crate) struct WALJournal {
-    file: Arc<Mutex<File>>,
+    backend: Arc<dyn StorageBackend>,
     sequence_counter: Arc<AtomicU64>,
     /// Tracks the last sequence number that has been fsynced
     last_synced: Arc<(Mutex<u64>, Condvar)>,
     /// Leader election flag - true when a transaction is performing group sync
     sync_in_progress: AtomicBool,
+    /// Mutex to ensure atomic append operations (len + write)
+    append_lock: Mutex<()>,
 }
 
 /// Header structure for the WAL file.
@@ -119,38 +126,71 @@ impl WALHeader {
 }
 
 impl WALJournal {
-    /// Opens an existing WAL file or creates a new one.
-    pub(crate) fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        #[allow(clippy::suspicious_open_options)]
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&path)?;
-
-        // Check if file is new (empty)
-        let metadata = file.metadata()?;
-        let header = if metadata.len() == 0 {
-            // New file - write initial header
+    /// Creates a new WAL journal with the given storage backend.
+    ///
+    /// This constructor accepts a pre-initialized `StorageBackend`, making it suitable
+    /// for both native (FileBackend) and WASM (WasmStorageBackend) use cases.
+    ///
+    /// The backend should be exclusive to this WAL journal (not shared with the main database).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Native: wrap a FileBackend
+    /// let file = std::fs::File::create("database.wal")?;
+    /// let backend = Arc::new(FileBackend::new(file)?);
+    /// let journal = WALJournal::new(backend)?;
+    ///
+    /// // WASM: use WasmStorageBackend
+    /// let backend = WasmStorageBackend::new("database.wal").await?;
+    /// let journal = WALJournal::new(Arc::new(backend))?;
+    /// ```
+    pub(crate) fn new(backend: Arc<dyn StorageBackend>) -> io::Result<Self> {
+        // Check if backend is new (empty)
+        let backend_len = backend.len()?;
+        let header = if backend_len == 0 {
+            // New backend - write initial header
             let header = WALHeader::new();
-            file.write_all(&header.to_bytes())?;
-            file.sync_all()?;
+            backend.write(0, &header.to_bytes())?;
+            backend.sync_data()?;
             header
         } else {
-            // Existing file - read and validate header
+            // Existing backend - read and validate header
             let mut header_buf = [0u8; WAL_HEADER_SIZE];
-            file.seek(SeekFrom::Start(0))?;
-            file.read_exact(&mut header_buf)?;
+            backend.read(0, &mut header_buf)?;
             WALHeader::from_bytes(&header_buf)?
         };
 
         Ok(Self {
-            file: Arc::new(Mutex::new(file)),
+            backend,
             sequence_counter: Arc::new(AtomicU64::new(header.latest_seq)),
             last_synced: Arc::new((Mutex::new(header.latest_seq), Condvar::new())),
             sync_in_progress: AtomicBool::new(false),
+            append_lock: Mutex::new(()),
         })
+    }
+
+    /// Opens an existing WAL file or creates a new one (native platforms only).
+    ///
+    /// This is a convenience method for native platforms that wraps a `FileBackend`.
+    /// For WASM or custom backends, use `WALJournal::new()` directly.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let path = path.as_ref();
+        #[allow(clippy::suspicious_open_options)]
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)?;
+
+        let backend = Arc::new(FileBackend::new(file).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to create FileBackend: {}", e),
+            )
+        })?);
+        Self::new(backend)
     }
 
     /// Appends a transaction entry to the WAL (without fsync).
@@ -176,12 +216,13 @@ impl WALJournal {
         wire_data.extend_from_slice(&entry_data);
         wire_data.extend_from_slice(&crc.to_le_bytes());
 
-        // Append to file (buffered write, no fsync yet)
+        // Append to backend (buffered write, no fsync yet)
         // Note: We don't update the header here to allow concurrent appends.
         // The header will be updated during checkpoint/truncate operations.
-        let mut file = self.file.lock().unwrap();
-        file.seek(SeekFrom::End(0))?;
-        file.write_all(&wire_data)?;
+        // Use append_lock to make len() + write() atomic
+        let _guard = self.append_lock.lock().unwrap();
+        let offset = self.backend.len()?;
+        self.backend.write(offset, &wire_data)?;
 
         Ok(seq)
     }
@@ -256,10 +297,7 @@ impl WALJournal {
         }
 
         // Fsync all pending writes
-        {
-            let file = self.file.lock().unwrap();
-            file.sync_all()?;
-        }
+        self.backend.sync_data()?;
 
         // Update last_synced and wake all waiting followers
         let current_seq = self.sequence_counter.load(Ordering::Acquire);
@@ -278,8 +316,7 @@ impl WALJournal {
 
     /// Syncs all pending writes to disk immediately (bypasses group commit).
     pub(crate) fn sync(&self) -> io::Result<()> {
-        let file = self.file.lock().unwrap();
-        file.sync_all()?;
+        self.backend.sync_data()?;
 
         // Update last_synced to current sequence
         let current_seq = self.sequence_counter.load(Ordering::Acquire);
@@ -293,36 +330,43 @@ impl WALJournal {
 
     /// Reads all entries with sequence numbers >= `start_seq`.
     pub(crate) fn read_from(&self, start_seq: u64) -> io::Result<Vec<WALEntry>> {
-        let mut file = self.file.lock().unwrap();
-
         // Note: We don't check header.latest_seq here because append() doesn't update
-        // the header (for performance). Instead, we scan the file until EOF.
+        // the header (for performance). Instead, we scan the backend until EOF.
 
-        // Skip past header to start of entries
-        file.seek(SeekFrom::Start(WAL_HEADER_SIZE as u64))?;
+        let backend_len = self.backend.len()?;
+        let mut offset = WAL_HEADER_SIZE as u64;
         let mut entries = Vec::new();
 
-        loop {
+        while offset < backend_len {
+            // Read entry length header
             let mut len_buf = [0u8; 4];
-            match file.read_exact(&mut len_buf) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
+            if offset + 4 > backend_len {
+                break; // Not enough data for length header
             }
+            self.backend.read(offset, &mut len_buf)?;
+            offset += 4;
 
             let total_len = u32::from_le_bytes(len_buf) as usize;
             if total_len < 8 {
-                break;
+                break; // Invalid entry length
             }
 
             let data_len = total_len - 4 - 4;
+            if offset + data_len as u64 + 4 > backend_len {
+                break; // Not enough data for entry
+            }
+
+            // Read entry data
             let mut entry_data = vec![0u8; data_len];
-            file.read_exact(&mut entry_data)?;
+            self.backend.read(offset, &mut entry_data)?;
+            offset += data_len as u64;
 
+            // Read CRC
             let mut crc_buf = [0u8; 4];
-            file.read_exact(&mut crc_buf)?;
-            let stored_crc = u32::from_le_bytes(crc_buf);
+            self.backend.read(offset, &mut crc_buf)?;
+            offset += 4;
 
+            let stored_crc = u32::from_le_bytes(crc_buf);
             let computed_crc = crc32fast::hash(&entry_data);
             if computed_crc != stored_crc {
                 eprintln!("WAL entry CRC mismatch - stopping replay");
@@ -341,17 +385,17 @@ impl WALJournal {
 
     /// Truncates the WAL and resets the sequence counter.
     pub(crate) fn truncate(&self, new_oldest_seq: u64) -> io::Result<()> {
-        let mut file = self.file.lock().unwrap();
+        // Truncate backend to just the header size
+        self.backend.set_len(WAL_HEADER_SIZE as u64)?;
 
-        file.set_len(WAL_HEADER_SIZE as u64)?;
-
-        file.seek(SeekFrom::Start(0))?;
+        // Write new header
         let mut header = WALHeader::new();
         header.oldest_seq = new_oldest_seq;
         header.latest_seq = new_oldest_seq - 1;
-        file.write_all(&header.to_bytes())?;
-        file.sync_all()?;
+        self.backend.write(0, &header.to_bytes())?;
+        self.backend.sync_data()?;
 
+        // Update internal state
         self.sequence_counter
             .store(new_oldest_seq - 1, Ordering::SeqCst);
 
@@ -368,17 +412,14 @@ impl WALJournal {
     /// Used in tests and diagnostics to inspect WAL state.
     #[allow(dead_code)]
     pub(crate) fn read_header(&self) -> io::Result<WALHeader> {
-        let mut file = self.file.lock().unwrap();
-        file.seek(SeekFrom::Start(0))?;
         let mut header_buf = [0u8; WAL_HEADER_SIZE];
-        file.read_exact(&mut header_buf)?;
+        self.backend.read(0, &mut header_buf)?;
         WALHeader::from_bytes(&header_buf)
     }
 
-    /// Returns the current WAL file size in bytes.
+    /// Returns the current WAL backend size in bytes.
     pub(crate) fn file_size(&self) -> io::Result<u64> {
-        let file = self.file.lock().unwrap();
-        Ok(file.metadata()?.len())
+        self.backend.len()
     }
 
     /// Shuts down the WAL journal gracefully.
@@ -399,16 +440,14 @@ impl WALJournal {
     /// Header updates happen only during checkpoint/truncate operations.
     /// Kept for potential future use in checkpoint optimizations.
     #[allow(dead_code)]
-    fn update_header_latest_seq(file: &mut File, latest_seq: u64) -> io::Result<()> {
-        file.seek(SeekFrom::Start(0))?;
+    fn update_header_latest_seq(&self, latest_seq: u64) -> io::Result<()> {
         let mut header_buf = [0u8; WAL_HEADER_SIZE];
-        file.read_exact(&mut header_buf)?;
+        self.backend.read(0, &mut header_buf)?;
 
         let mut header = WALHeader::from_bytes(&header_buf)?;
         header.latest_seq = latest_seq;
 
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(&header.to_bytes())?;
+        self.backend.write(0, &header.to_bytes())?;
 
         Ok(())
     }

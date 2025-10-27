@@ -300,6 +300,8 @@
                     <h2>Operations</h2>
                     <div class="button-group">
                         <button onclick="listAllData()">List All Data</button>
+                        <button onclick="syncDatabase()">Sync/Checkpoint WAL</button>
+                        <button onclick="checkWALStatus()">Check WAL Status</button>
                         <button onclick="testPersistence()">Test Persistence</button>
                         <button onclick="clearLogs()">Clear Logs</button>
                     </div>
@@ -481,6 +483,24 @@
                     }
                 } catch (error) {
                     log(`Read failed: ${error.message}`, "error");
+                }
+            };
+
+            window.syncDatabase = async function () {
+                try {
+                    log("Triggering manual WAL checkpoint...", "info");
+                    await sendMessage("sync");
+                    log("Checkpoint complete!", "success");
+                } catch (error) {
+                    log(`Sync failed: ${error.message}`, "error");
+                }
+            };
+
+            window.checkWALStatus = async function () {
+                try {
+                    await sendMessage("walStatus");
+                } catch (error) {
+                    log(`WAL status check failed: ${error.message}`, "error");
                 }
             };
 

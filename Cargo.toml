@@ -38,6 +38,7 @@ arc-swap = "1.7.1"
 libc = "0.2.174"
 
 [target.wasm32-unknown-unknown.dependencies]
+gloo-timers = { version = "0.3.0", features = ["futures"] }
 js-sys = "0.3.81"
 wasm-bindgen = "0.2.104"
 wasm-bindgen-futures = "0.4.54"

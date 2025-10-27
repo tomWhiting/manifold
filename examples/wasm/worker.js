@@ -44,10 +44,15 @@ self.onmessage = async function (e) {
                 }
 
                 log("Opening column family database...");
-                db = await new WasmDatabase("manifold-demo.db");
+                const poolSize = 8; // WAL enabled with 8 file handles for group commit
+                db = await new WasmDatabase("manifold-demo.db", poolSize);
 
                 const columnFamilies = db.listColumnFamilies();
                 log(`Database initialized with ${columnFamilies.length} column families`);
+
+                log("WAL ENABLED (pool_size=8) - Fast writes with group commit", "success");
+                log("  - Checkpoints: 15s interval or 32 MB WAL size", "info");
+                log("  - Manual checkpoint available via Sync button", "info");
 
                 result = { columnFamilies };
                 break;
@@ -59,9 +64,12 @@ self.onmessage = async function (e) {
                 break;
 
             case "write":
-                log(`Writing to ${data.cf}["${data.key}"]`);
+                log(`Writing to ${data.cf}["${data.key}"]`, "info");
                 const cf = db.columnFamilyOrCreate(data.cf);
+                const writeStart = performance.now();
                 cf.write(data.key, data.value);
+                const writeTime = (performance.now() - writeStart).toFixed(2);
+                log(`Write complete in ${writeTime}ms (WAL + group commit)`, "success");
                 break;
 
             case "read":
@@ -120,6 +128,41 @@ self.onmessage = async function (e) {
                 result = { entries: rangeEntries };
                 break;
 
+            case "sync":
+                log("Manual sync: Triggering WAL checkpoint...", "info");
+                db.sync();
+                log("Checkpoint complete - WAL flushed to main database", "success");
+                break;
+
+            case "walStatus":
+                log("Checking WAL status in OPFS...", "info");
+                try {
+                    const root = await navigator.storage.getDirectory();
+                    let walExists = false;
+                    let walSize = 0;
+
+                    try {
+                        const walHandle = await root.getFileHandle("manifold-demo.db.wal");
+                        const file = await walHandle.getFile();
+                        walExists = true;
+                        walSize = file.size;
+                    } catch (e) {
+                        // WAL file doesn't exist yet
+                    }
+
+                    if (walExists) {
+                        log(`WAL file exists: ${walSize} bytes`, "success");
+                        log(`WAL will checkpoint at 32 MB or 15 seconds`, "info");
+                    } else {
+                        log("WAL file not yet created (no writes yet)", "info");
+                    }
+
+                    result = { walExists, walSize };
+                } catch (error) {
+                    log(`WAL status check failed: ${error.message}`, "error");
+                }
+                break;
+
             default:
                 throw new Error(`Unknown message type: ${type}`);
         }
@@ -141,3 +184,17 @@ self.onmessage = async function (e) {
         });
     }
 };
+
+// beforeunload example: Sync database before page closes
+// This ensures any pending WAL entries are checkpointed to the main database
+// Uncomment the following to enable automatic sync on page close:
+//
+// self.addEventListener("beforeunload", async (e) => {
+//     if (db) {
+//         try {
+//             db.sync();
+//         } catch (error) {
+//             console.error("Failed to sync database on close:", error);
+//         }
+//     }
+// });

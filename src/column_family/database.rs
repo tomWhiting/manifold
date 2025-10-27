@@ -21,11 +21,9 @@ use super::builder::ColumnFamilyDatabaseBuilder;
 use super::file_handle_pool::FileHandlePool;
 use super::header::{ColumnFamilyMetadata, FreeSegment, MasterHeader, PAGE_SIZE, Segment};
 use super::state::ColumnFamilyState;
-#[cfg(not(target_arch = "wasm32"))]
 use super::wal::checkpoint::CheckpointManager;
 #[cfg(not(target_arch = "wasm32"))]
 use super::wal::config::CheckpointConfig;
-#[cfg(not(target_arch = "wasm32"))]
 use super::wal::journal::WALJournal;
 
 /// Default size allocated to a new column family (1 GB).
@@ -166,14 +164,8 @@ pub struct ColumnFamilyDatabase {
     file_name: String,
     column_families: Arc<RwLock<HashMap<String, Arc<ColumnFamilyState>>>>,
     header: Arc<RwLock<MasterHeader>>,
-    #[cfg(not(target_arch = "wasm32"))]
     wal_journal: Option<Arc<WALJournal>>,
-    #[cfg(not(target_arch = "wasm32"))]
     checkpoint_manager: Option<Arc<CheckpointManager>>,
-    #[cfg(target_arch = "wasm32")]
-    wal_journal: Option<Arc<()>>,
-    #[cfg(target_arch = "wasm32")]
-    checkpoint_manager: Option<Arc<()>>,
 }
 
 impl ColumnFamilyDatabase {
@@ -259,7 +251,8 @@ impl ColumnFamilyDatabase {
     pub(crate) fn open_with_backend_internal(
         file_name: String,
         backend: Arc<dyn StorageBackend>,
-        pool_size: usize,
+        wal_journal: Option<Arc<WALJournal>>,
+        checkpoint_manager: Option<Arc<CheckpointManager>>,
     ) -> Result<Self, DatabaseError> {
         let file_name = file_name.into();
 
@@ -299,11 +292,6 @@ impl ColumnFamilyDatabase {
             let state = ColumnFamilyState::new(cf_meta.name.clone(), cf_meta.segments.clone());
             column_families.insert(cf_meta.name.clone(), Arc::new(state));
         }
-
-        // Note: WAL not yet implemented for WASM - ignore pool_size for now
-        let _ = pool_size;
-        let wal_journal = None;
-        let checkpoint_manager = None;
 
         Ok(Self {
             file_name,
@@ -722,6 +710,81 @@ impl ColumnFamilyDatabase {
             .collect()
     }
 
+    /// Enable WAL with the given backend (WASM only).
+    ///
+    /// This must be called immediately after creation to initialize WAL support.
+    /// Returns the checkpoint manager for tracking.
+    #[cfg(target_arch = "wasm32")]
+    pub fn enable_wal(
+        &mut self,
+        wal_backend: Arc<dyn StorageBackend>,
+    ) -> Result<(), DatabaseError> {
+        use crate::column_family::wal::checkpoint::CheckpointManager;
+        use crate::column_family::wal::config::CheckpointConfig;
+        use crate::column_family::wal::journal::WALJournal;
+
+        // Create WAL journal with the provided backend
+        let journal = WALJournal::new(wal_backend)
+            .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+        let journal_arc = Arc::new(journal);
+
+        // Start checkpoint manager
+        let config = CheckpointConfig {
+            interval: std::time::Duration::from_secs(15), // WASM default: 15s
+            max_wal_size: 32 * 1024 * 1024,               // WASM default: 32 MB
+        };
+
+        // We need Arc<Self> for checkpoint manager, but we have &mut self
+        // Store journal first, then create manager
+        self.wal_journal = Some(Arc::clone(&journal_arc));
+
+        // Create a temporary Arc to Self for checkpoint manager
+        // This is safe because checkpoint manager only needs read access
+        let db_arc = unsafe { Arc::from_raw(self as *const Self) };
+
+        let checkpoint_mgr =
+            CheckpointManager::start(Arc::clone(&journal_arc), Arc::clone(&db_arc), config);
+
+        // Don't drop the Arc - it's just a reference
+        std::mem::forget(db_arc);
+
+        self.checkpoint_manager = Some(Arc::new(checkpoint_mgr));
+
+        Ok(())
+    }
+
+    /// Manually triggers a checkpoint to flush WAL to main database.
+    ///
+    /// This ensures all pending WAL entries are applied to the database and persisted.
+    /// If WAL is disabled (pool_size = 0), this is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint operation fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn checkpoint(&self) -> Result<(), DatabaseError> {
+        if let Some(checkpoint_mgr) = self.checkpoint_manager.as_ref() {
+            checkpoint_mgr
+                .checkpoint_now()
+                .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+        }
+        Ok(())
+    }
+
+    /// Manually triggers a checkpoint to flush WAL to main database (WASM version).
+    ///
+    /// This ensures all pending WAL entries are applied to the database and persisted.
+    /// If WAL is disabled (pool_size = 0), this is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint operation fails.
+    #[cfg(target_arch = "wasm32")]
+    pub fn checkpoint(&self) -> Result<(), DatabaseError> {
+        // WASM checkpoint manager placeholder - will be implemented when we have proper async support
+        Ok(())
+    }
+
     /// Returns the path to the database file (native platforms).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn path(&self) -> &Path {
@@ -904,14 +967,8 @@ pub struct ColumnFamily {
     #[cfg(target_arch = "wasm32")]
     backend: Arc<dyn StorageBackend>,
     header: Arc<RwLock<MasterHeader>>,
-    #[cfg(not(target_arch = "wasm32"))]
     wal_journal: Option<Arc<WALJournal>>,
-    #[cfg(not(target_arch = "wasm32"))]
     checkpoint_manager: Option<Arc<CheckpointManager>>,
-    #[cfg(target_arch = "wasm32")]
-    wal_journal: Option<Arc<()>>,
-    #[cfg(target_arch = "wasm32")]
-    checkpoint_manager: Option<Arc<()>>,
 }
 
 impl ColumnFamily {

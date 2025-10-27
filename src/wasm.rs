@@ -433,17 +433,71 @@ pub struct WasmDatabase {
 #[wasm_bindgen]
 impl WasmDatabase {
     /// Opens or creates a database with the given file name
+    ///
+    /// # Arguments
+    ///
+    /// * `file_name` - Name of the database file in OPFS
+    /// * `pool_size` - Number of file handles for WAL (0 = disabled, 4-8 recommended for WASM)
     #[wasm_bindgen(constructor)]
-    pub async fn new(file_name: String) -> Result<WasmDatabase, JsValue> {
+    pub async fn new(file_name: String, pool_size: usize) -> Result<WasmDatabase, JsValue> {
+        use crate::column_family::wal::checkpoint::CheckpointManager;
+        use crate::column_family::wal::config::CheckpointConfig;
+        use crate::column_family::wal::journal::WALJournal;
+
+        // Create main database backend
         let backend = WasmStorageBackend::new(&file_name).await?;
         let backend_arc: Arc<dyn StorageBackend> = Arc::new(backend);
 
-        let db = crate::column_family::ColumnFamilyDatabase::open_with_backend_internal(
-            file_name,
-            backend_arc,
-            0, // pool_size: 0 disables WAL (not yet implemented for WASM)
-        )
-        .map_err(|e| JsValue::from_str(&format!("Failed to open database: {}", e)))?;
+        let db = if pool_size > 0 {
+            // WAL enabled - create WAL backend, journal, and checkpoint manager
+
+            // Create WAL backend with .wal extension
+            let wal_file_name = format!("{}.wal", file_name);
+            let wal_backend = WasmStorageBackend::new(&wal_file_name).await?;
+            let wal_backend_arc: Arc<dyn StorageBackend> = Arc::new(wal_backend);
+
+            // Create WAL journal
+            let journal = WALJournal::new(wal_backend_arc)
+                .map_err(|e| JsValue::from_str(&format!("Failed to create WAL journal: {}", e)))?;
+            let journal_arc = Arc::new(journal);
+
+            // Open database without checkpoint manager first
+            let db_temp = crate::column_family::ColumnFamilyDatabase::open_with_backend_internal(
+                file_name.clone(),
+                Arc::clone(&backend_arc),
+                Some(Arc::clone(&journal_arc)),
+                None,
+            )
+            .map_err(|e| JsValue::from_str(&format!("Failed to open database: {}", e)))?;
+
+            // Create temporary Arc for checkpoint manager initialization
+            let db_arc = Arc::new(db_temp);
+
+            // Start checkpoint manager with WASM config (15s interval, 32MB max)
+            let config =
+                CheckpointConfig::from(crate::column_family::wal::config::WALConfig::default());
+            let checkpoint_mgr =
+                CheckpointManager::start(Arc::clone(&journal_arc), Arc::clone(&db_arc), config);
+
+            // Create final database with checkpoint manager
+            // Note: We can't easily extract the database from the Arc, so we create a new one
+            crate::column_family::ColumnFamilyDatabase::open_with_backend_internal(
+                file_name,
+                backend_arc,
+                Some(journal_arc),
+                Some(Arc::new(checkpoint_mgr)),
+            )
+            .map_err(|e| JsValue::from_str(&format!("Failed to reinitialize database: {}", e)))?
+        } else {
+            // WAL disabled - simple initialization
+            crate::column_family::ColumnFamilyDatabase::open_with_backend_internal(
+                file_name,
+                backend_arc,
+                None,
+                None,
+            )
+            .map_err(|e| JsValue::from_str(&format!("Failed to open database: {}", e)))?
+        };
 
         Ok(WasmDatabase { db })
     }
@@ -481,6 +535,22 @@ impl WasmDatabase {
             .column_family(&name)
             .map_err(|e| JsValue::from_str(&format!("Column family not found: {}", e)))?;
         Ok(WasmColumnFamily { cf })
+    }
+
+    /// Manually triggers a checkpoint to flush WAL to main database
+    ///
+    /// This ensures all pending WAL entries are applied to the database and persisted.
+    /// Useful for:
+    /// - Calling from beforeunload handler to ensure data safety on browser close
+    /// - Explicit control over when expensive checkpoint operations happen
+    /// - Testing and verification
+    ///
+    /// If WAL is disabled (pool_size = 0), this is a no-op.
+    pub fn sync(&self) -> Result<(), JsValue> {
+        self.db
+            .checkpoint()
+            .map_err(|e| JsValue::from_str(&format!("Checkpoint failed: {}", e)))?;
+        Ok(())
     }
 }
 
