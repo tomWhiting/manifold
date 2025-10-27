@@ -129,7 +129,7 @@ impl WALJournal {
     /// Creates a new WAL journal with the given storage backend.
     ///
     /// This constructor accepts a pre-initialized `StorageBackend`, making it suitable
-    /// for both native (FileBackend) and WASM (WasmStorageBackend) use cases.
+    /// for both native (`FileBackend`) and WASM (`WasmStorageBackend`) use cases.
     ///
     /// The backend should be exclusive to this WAL journal (not shared with the main database).
     ///
@@ -185,10 +185,7 @@ impl WALJournal {
             .open(path)?;
 
         let backend = Arc::new(FileBackend::new(file).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to create FileBackend: {}", e),
-            )
+            io::Error::other(format!("Failed to create FileBackend: {e}"))
         })?);
         Self::new(backend)
     }

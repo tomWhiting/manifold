@@ -271,9 +271,10 @@ impl MasterHeader {
     /// - metadata entries (variable)
     /// - `free_count` (u32)
     /// - free segment entries (variable)
+    /// - CRC32 checksum (4 bytes) at `PAGE_SIZE - 4`
     /// - padding to page size
     ///
-    /// Returns error if serialized size exceeds `PAGE_SIZE`.
+    /// Returns error if serialized size exceeds `PAGE_SIZE - 4` (need space for CRC).
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(PAGE_SIZE);
 
@@ -301,27 +302,35 @@ impl MasterHeader {
             bytes.extend_from_slice(&free_seg.to_bytes());
         }
 
-        // Check size constraint
-        if bytes.len() > PAGE_SIZE {
+        // Check size constraint (reserve 4 bytes for CRC at the end)
+        if bytes.len() > PAGE_SIZE - 4 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "master header size ({} bytes) exceeds page size ({} bytes)",
+                    "master header size ({} bytes) exceeds page size minus CRC ({} bytes)",
                     bytes.len(),
-                    PAGE_SIZE
+                    PAGE_SIZE - 4
                 ),
             ));
         }
 
-        // Pad to page size with zeros
-        bytes.resize(PAGE_SIZE, 0);
+        // Pad to PAGE_SIZE - 4 with zeros (leaving space for CRC)
+        bytes.resize(PAGE_SIZE - 4, 0);
+
+        // Compute CRC32 over all data before the checksum
+        let crc = crc32fast::hash(&bytes);
+        
+        // Append CRC32 at the end
+        bytes.extend_from_slice(&crc.to_le_bytes());
+
+        assert_eq!(bytes.len(), PAGE_SIZE);
 
         Ok(bytes)
     }
 
     /// Deserializes a master header from bytes.
     ///
-    /// Validates magic number, version, and metadata integrity.
+    /// Validates magic number, CRC32 checksum, version, and metadata integrity.
     pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
         if data.len() < PAGE_SIZE {
             return Err(io::Error::new(
@@ -335,6 +344,18 @@ impl MasterHeader {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid magic number",
+            ));
+        }
+
+        // Validate CRC32 checksum BEFORE parsing
+        // CRC is stored in the last 4 bytes
+        let stored_crc = u32::from_le_bytes(data[PAGE_SIZE - 4..PAGE_SIZE].try_into().unwrap());
+        let computed_crc = crc32fast::hash(&data[0..PAGE_SIZE - 4]);
+
+        if stored_crc != computed_crc {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("header checksum mismatch: expected {stored_crc:#x}, got {computed_crc:#x}"),
             ));
         }
 

@@ -40,8 +40,8 @@ pub struct FileHandlePool {
     entries: Mutex<HashMap<String, PoolEntry>>,
     /// Global lock for file growth operations to prevent race conditions
     /// when multiple column families try to grow the same underlying file concurrently.
-    /// Serializes set_len() calls across all file handles to the same file.
-    /// Stored as Arc so it can be shared with all PartitionedStorageBackend instances.
+    /// Serializes `set_len()` calls across all file handles to the same file.
+    /// Stored as Arc so it can be shared with all `PartitionedStorageBackend` instances.
     file_growth_lock: Arc<Mutex<()>>,
 }
 
@@ -174,12 +174,12 @@ impl FileHandlePool {
 
     /// Returns a clone of the Arc wrapping the file growth lock.
     ///
-    /// This Arc should be passed to PartitionedStorageBackend instances so they can
+    /// This Arc should be passed to `PartitionedStorageBackend` instances so they can
     /// serialize file growth operations across all column families using the same file.
     ///
     /// # Returns
     ///
-    /// An Arc-wrapped Mutex that all backends for this file should use when calling set_len().
+    /// An Arc-wrapped Mutex that all backends for this file should use when calling `set_len()`.
     pub fn file_growth_lock(&self) -> Arc<Mutex<()>> {
         Arc::clone(&self.file_growth_lock)
     }

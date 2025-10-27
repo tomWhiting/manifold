@@ -761,7 +761,7 @@ impl ColumnFamilyDatabase {
     /// Manually triggers a checkpoint to flush WAL to main database.
     ///
     /// This ensures all pending WAL entries are applied to the database and persisted.
-    /// If WAL is disabled (pool_size = 0), this is a no-op.
+    /// If WAL is disabled (`pool_size` = 0), this is a no-op.
     ///
     /// # Errors
     ///
@@ -779,7 +779,7 @@ impl ColumnFamilyDatabase {
     /// Manually triggers a checkpoint to flush WAL to main database (WASM version).
     ///
     /// This ensures all pending WAL entries are applied to the database and persisted.
-    /// If WAL is disabled (pool_size = 0), this is a no-op.
+    /// If WAL is disabled (`pool_size` = 0), this is a no-op.
     ///
     /// # Errors
     ///

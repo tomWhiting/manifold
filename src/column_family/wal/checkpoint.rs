@@ -188,8 +188,13 @@ impl CheckpointManager {
                     Ok(()) => {
                         last_checkpoint = std::time::Instant::now();
                     }
+                    #[cfg(feature = "logging")]
                     Err(e) => {
-                        eprintln!("Checkpoint failed: {e}");
+                        log::error!("Checkpoint failed (will retry): {e}");
+                        // Continue running - retry on next interval
+                    }
+                    #[cfg(not(feature = "logging"))]
+                    Err(_) => {
                         // Continue running - retry on next interval
                     }
                 }

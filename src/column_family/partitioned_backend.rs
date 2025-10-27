@@ -47,9 +47,9 @@ pub struct PartitionedStorageBackend {
     inner: Arc<dyn StorageBackend>,
     segments: Arc<RwLock<Vec<Segment>>>,
     expansion_callback: Option<Arc<dyn Fn(u64) -> io::Result<Segment> + Send + Sync>>,
-    /// Global lock for file growth operations. Shared across all PartitionedStorageBackend
+    /// Global lock for file growth operations. Shared across all `PartitionedStorageBackend`
     /// instances using the same underlying file to prevent race conditions during concurrent
-    /// set_len() calls.
+    /// `set_len()` calls.
     file_growth_lock: Arc<Mutex<()>>,
 }
 
@@ -247,7 +247,7 @@ impl StorageBackend for PartitionedStorageBackend {
 
         // CRITICAL: Serialize file growth across all column families sharing this file
         // Multiple PartitionedStorageBackend instances may wrap the same file via different
-        // FileBackend handles from the pool. Without this lock, concurrent set_len() calls
+        // FileBackend handles from the pool. Without this lock, concurrent `set_len()` calls
         // can race, causing assertion failures where header claims file is larger than actual.
         let _growth_lock = self.file_growth_lock.lock().unwrap();
 
