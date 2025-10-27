@@ -13,7 +13,7 @@ authors.workspace = true
 
 [workspace]
 members = [".", "crates/manifold-bench", "crates/manifold-derive", "crates/manifold-python"]
-default-members = [".", "crates/manifold-derive", "crates/manifold-python"]
+default-members = [".", "crates/manifold-derive"]
 
 [workspace.package]
 edition = "2024"

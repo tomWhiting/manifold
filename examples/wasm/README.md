@@ -164,17 +164,9 @@ The Write-Ahead Log (WAL) feature is not yet implemented for WASM. This means:
 - Each write commits directly to storage
 - Performance is lower than native with WAL enabled
 
-This is planned for future work. The architecture supports it; we just need to:
-1. Port the WAL journal to use WASM backend
+This is planned for Phase 6.2. The architecture supports it; we just need to:
+1. Implement async checkpoint manager with gloo-timers
 2. Test recovery and checkpoint mechanisms in browser context
-
-### TableDefinition API
-
-The example uses a simplified API for demonstration. In production, you'd use typed `TableDefinition` for type safety:
-
-```rust
-const USERS: TableDefinition<&str, User> = TableDefinition::new("users");
-```
 
 ## Performance Characteristics
 

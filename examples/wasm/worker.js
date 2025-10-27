@@ -72,16 +72,52 @@ self.onmessage = async function (e) {
                 break;
 
             case "listAll":
-                log("Listing all data...");
+                log("Listing all data using batch iteration...");
                 const allData = {};
                 const cfs = db.listColumnFamilies();
 
                 for (const cfName of cfs) {
-                    // For now, just return empty - full iteration would need more WASM API
-                    allData[cfName] = [];
+                    const cf = db.columnFamily(cfName);
+                    const iter = cf.iter();
+                    const entries = [];
+
+                    // Use batch iteration for performance (100 entries at a time)
+                    let batch;
+                    while ((batch = iter.nextBatch(100)).length > 0) {
+                        // Convert to regular JavaScript array for iteration
+                        for (let i = 0; i < batch.length; i++) {
+                            const pair = batch[i];
+                            const key = pair[0];
+                            const value = pair[1];
+                            entries.push({ key, value });
+                        }
+                    }
+
+                    allData[cfName] = entries;
+                    log(`Listed ${entries.length} entries from ${cfName}`);
                 }
 
                 result = { data: allData };
+                break;
+
+            case "listRange":
+                log(`Listing range: ${data.startKey || "(start)"} to ${data.endKey || "(end)"}`);
+                const rangeCf = db.columnFamily(data.cf);
+                const rangeIter = rangeCf.iterRange(data.startKey || null, data.endKey || null);
+                const rangeEntries = [];
+
+                let rangeBatch;
+                while ((rangeBatch = rangeIter.nextBatch(100)).length > 0) {
+                    for (let i = 0; i < rangeBatch.length; i++) {
+                        const pair = rangeBatch[i];
+                        const key = pair[0];
+                        const value = pair[1];
+                        rangeEntries.push({ key, value });
+                    }
+                }
+
+                log(`Found ${rangeEntries.length} entries in range`);
+                result = { entries: rangeEntries };
                 break;
 
             default:

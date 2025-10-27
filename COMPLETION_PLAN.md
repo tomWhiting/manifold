@@ -521,13 +521,55 @@ This section documents important design decisions made during implementation, in
   - Located in `examples/wasm/` with index.html, worker.js, README.md
   - **Dev Notes:** Created example with UI, Web Worker integration, and README. Column family creation, data write/read working and tested. Persistence verified in Safari. CRITICAL ISSUE: List All Data currently returns placeholder empty arrays instead of actual data - iteration API not yet implemented. This must be fixed before Phase 6 can be marked complete.
 
-- [ ] Implement proper table iteration API for WASM
-  - Design decision: WasmIterator that owns ReadTransaction
-  - Create WasmIterator struct with next() method
-  - Returns Option<(String, String)> for each key-value pair
-  - Handles lifetimes by owning the transaction
-  - Expose via WasmColumnFamily.iter() or similar
-  - Update worker.js listAll case to use real iteration
+- [x] **Phase 6.1: High-Performance Batch Iterator for WASM** (COMPLETE)
+  - **Design Decision: Hybrid batch/single API for optimal performance**
+    - Primary API: `next_batch(size)` returns array of up to N entries (default 100)
+    - Convenience API: `next()` returns single entry (wrapper around batch(1))
+    - Helper API: `collect_all()` returns all remaining entries
+    - Range query API: `iter_range(start_key, end_key)` for subset iteration
+  - **Architecture:**
+    - WasmIterator owns ReadTransaction (solves lifetime issues)
+    - Configurable batch size (default 100 for optimal boundary crossing performance)
+    - Proper Drop implementation ensures transaction cleanup
+    - Range bounds support: inclusive start, exclusive end (standard Rust semantics)
+  - **Performance Target:** 100x faster than simple next() for large tables
+    - 10,000 entries: ~0.5ms with batch vs ~50ms with simple next
+    - Minimize WASM-JS boundary crossings (1-5us each)
+  - **Tasks:**
+    - [x] Create WasmIterator struct owning ReadTransaction
+    - [x] Implement next_batch(size) as primary high-performance API
+    - [x] Implement next() convenience wrapper
+    - [x] Implement collect_all() helper
+    - [x] Add iter() method to WasmColumnFamily
+    - [x] Add iter_range(start, end) for range queries
+    - [x] Update worker.js to use real iteration with batching
+    - [x] Add range query support to worker and UI
+    - [x] Test compilation with wasm-pack
+    - [x] Fix Cargo.toml to exclude pyo3 from WASM builds
+    - [x] Browser testing - full iteration and range queries working
+  - **Dev Notes:** Implemented full batch iterator API in src/wasm.rs. WasmIterator owns ReadTransaction and Range<'static, String, String> iterator, solving lifetime issues at WASM boundary. Iterator returns tuple (AccessGuard<K>, AccessGuard<V>) which we destructure and clone. Fixed Option<JsValue> issue by returning JsValue::UNDEFINED instead of None. Updated worker.js listAll case to use batch iteration with size 100, using index-based iteration (for i=0; i<batch.length; i++) instead of for-of loops since WASM-returned js_sys::Array doesn't support iterator protocol. Fixed index.html to access entry.key and entry.value instead of array destructuring. Added iter_range(start_key, end_key) with proper Rust Bound support (Included/Excluded/Unbounded). Added range query UI and worker support with listRange case. Excluded manifold-python from default-members in Cargo.toml to avoid pyo3 WASM compilation errors (Python bindings still work with cargo build -p manifold-python). WASM build successful with wasm-pack. Browser tested and working - full iteration and range queries fully functional.
+
+- [ ] **Phase 6.2: WAL Support for WASM** (Not Started)
+  - **Design Decision: Rust async checkpoint manager with gloo-timers**
+    - Use wasm-bindgen-futures spawn_local for async tasks
+    - Use gloo-timers for sleep/interval functionality
+    - Conditional compilation: native uses std::thread, WASM uses async
+    - Keep same defaults: 60s interval, 64MB max WAL size
+  - **Architecture:**
+    - WAL journal uses WasmStorageBackend (already supports any StorageBackend)
+    - Checkpoint manager with conditional threading implementation
+    - Manual checkpoint method exposed to JavaScript for explicit control
+    - Full crash recovery with WAL replay on database open
+  - **Tasks:**
+    - [ ] Add gloo-timers dependency for WASM target
+    - [ ] Implement async checkpoint loop with spawn_local
+    - [ ] Add conditional compilation to checkpoint manager
+    - [ ] Enable pool_size parameter in WasmDatabase::new()
+    - [ ] Test WAL file creation in OPFS
+    - [ ] Test checkpoint triggering (time and size based)
+    - [ ] Test crash recovery (close without cleanup, reopen)
+    - [ ] Expose manual checkpoint method to JavaScript
+    - [ ] Verify group commit batching works in WASM
   - **Dev Notes:**
 
 - [x] Test WASM build (Partial - iteration untested) ⚠️
@@ -558,22 +600,26 @@ This section documents important design decisions made during implementation, in
 
 **Dependencies:** Phases 1-5 complete (especially Phase 5.6 WAL and Phase 5.7 API simplification)
 
-**Estimated Time:** 8-10 hours (10 hours completed, +2-3 hours needed for iteration)
+**Estimated Time:** 15-18 hours total
 - Core WasmStorageBackend implementation: 2 hours ✅
-- Integration & conditional compilation: 3 hours ✅ (took longer than estimated)
+- Integration & conditional compilation: 3 hours ✅
 - Example web app: 2 hours ✅
-- Browser compatibility testing & iteration: 3 hours ✅
-- Table iteration API implementation: 2-3 hours (In Progress)
-- Unit tests with wasm-bindgen-test: Deferred (not critical for initial release)
+- Browser compatibility testing: 3 hours ✅
+- Phase 6.1 Batch iterator implementation: 2 hours ✅
+- Phase 6.2 WAL for WASM: 4-5 hours (Not Started)
+- Comprehensive testing: 1-2 hours (Not Started)
 
 **Success Criteria:**
 - ✅ ColumnFamilyDatabase compiles and runs in wasm32-unknown-unknown target
 - ✅ OPFS persistence works across page reloads in Web Worker context
 - ✅ Multiple column families accessible from Web Workers
-- ⚠️ Example demonstrates practical usage pattern (read/write work, iteration missing)
-- ✅ Clear documentation of requirements and limitations
+- ✅ High-performance batch iteration API implemented and tested
+- ✅ Range query support implemented and tested
+- [ ] WAL support working in WASM with async checkpoint manager
+- ✅ Full example demonstrates all features (CRUD, iteration, range queries, persistence)
+- ✅ Clear documentation
 
-**Phase Status: 90% Complete - Iteration API Required**
+**Phase Status: 85% Complete - WAL Implementation Remaining (Phase 6.2)**
 
 **Completed:**
 - Full WASM support with OPFS storage backend
@@ -582,26 +628,26 @@ This section documents important design decisions made during implementation, in
 - Comprehensive documentation and troubleshooting guide
 - Conditional compilation to handle WASM platform differences
 - All basic CRUD operations working
+- High-performance batch iteration API with range queries (Phase 6.1 complete)
+- Full example UI with create, read, write, iterate, and range query operations
 
-**Remaining Work:**
-- Implement WasmIterator for proper table iteration
-- Remove placeholder empty array returns in listAll
-- Test iteration functionality in browser
-- Verify iteration works with multiple entries
+**Remaining Work (Phase 6.2 - WAL):**
+- Implement async checkpoint manager with gloo-timers
+- Add conditional compilation for WASM threading
+- Enable pool_size parameter in WasmDatabase
+- Test WAL creation, checkpointing, and recovery
+- Expose manual checkpoint to JavaScript
+- Verify performance improvements match native
 
-**Current Limitations:**
-- WAL not yet implemented for WASM (documented for future work)
-- Table iteration not yet implemented (CRITICAL - blocking Phase 6 completion)
-- Requires Web Worker context for OPFS synchronous access
-- SystemTime/Instant timing code disabled in WASM builds
+**Current Status:**
+- ✅ All core database operations working (CRUD, iteration, range queries)
+- ✅ OPFS persistence fully functional
+- ✅ Multi-column family support
+- ⏳ WAL implementation planned for Phase 6.2
 
-**Implementation Plan for Iteration:**
-Approach: WasmIterator struct that owns ReadTransaction
-- WasmIterator holds ReadTransaction and table iterator
-- Expose next() method returning Option<JsValue> with [key, value] array
-- Properly manages lifetimes by owning the transaction
-- No shortcuts or placeholders - true streaming iteration
-- Estimated time: 2-3 hours
+**Platform Requirements:**
+- Requires Web Worker context for OPFS synchronous access (browser limitation)
+- Modern browser with OPFS support (Chrome 102+, Safari 15.2+, Firefox 111+)
 
 ---
 

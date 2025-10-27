@@ -285,8 +285,20 @@
                 </div>
 
                 <div class="section">
+                    <h2>Range Query</h2>
+                    <div class="input-group">
+                        <select id="rangeCF">
+                            <option value="">Select column family...</option>
+                        </select>
+                        <input type="text" id="rangeStart" placeholder="Start key (optional)" />
+                        <input type="text" id="rangeEnd" placeholder="End key (optional)" />
+                        <button onclick="queryRange()">Query Range</button>
+                    </div>
+                </div>
+
+                <div class="section">
                     <h2>Operations</h2>
-                    <div class="button</h2>-group">
+                    <div class="button-group">
                         <button onclick="listAllData()">List All Data</button>
                         <button onclick="testPersistence()">Test Persistence</button>
                         <button onclick="clearLogs()">Clear Logs</button>
@@ -334,10 +346,12 @@
                 const cfList = document.getElementById("cfList");
                 const writeCF = document.getElementById("writeCF");
                 const readCF = document.getElementById("readCF");
+                const rangeCF = document.getElementById("rangeCF");
 
                 cfList.innerHTML = "";
                 writeCF.innerHTML = '<option value="">Select column family...</option>';
                 readCF.innerHTML = '<option value="">Select column family...</option>';
+                rangeCF.innerHTML = '<option value="">Select column family...</option>';
 
                 columnFamilies.forEach((cf) => {
                     const badge = document.createElement("div");
@@ -354,6 +368,11 @@
                     readOption.value = cf;
                     readOption.textContent = cf;
                     readCF.appendChild(readOption);
+
+                    const rangeOption = document.createElement("option");
+                    rangeOption.value = cf;
+                    rangeOption.textContent = cf;
+                    rangeCF.appendChild(rangeOption);
                 });
             }
 
@@ -446,22 +465,53 @@
 
             window.readData = async function () {
                 const cf = document.getElementById("readCF").value;
-                const key = document.getElementById("readKey").value.trim();
+                const key = document.getElementById("readKey").value;
 
                 if (!cf || !key) {
-                    log("Please select column family and enter key", "error");
+                    log("Please select a CF and enter a key", "error");
                     return;
                 }
 
                 try {
                     const result = await sendMessage("read", { cf, key });
-                    if (result.value !== null) {
+                    if (result.value) {
                         log(`Read ${cf}["${key}"] = "${result.value}"`, "success");
                     } else {
                         log(`Key "${key}" not found in ${cf}`, "info");
                     }
                 } catch (error) {
                     log(`Read failed: ${error.message}`, "error");
+                }
+            };
+
+            window.queryRange = async function () {
+                const cf = document.getElementById("rangeCF").value;
+                const startKey = document.getElementById("rangeStart").value;
+                const endKey = document.getElementById("rangeEnd").value;
+
+                if (!cf) {
+                    log("Please select a column family", "error");
+                    return;
+                }
+
+                try {
+                    const result = await sendMessage("listRange", {
+                        cf,
+                        startKey: startKey || undefined,
+                        endKey: endKey || undefined,
+                    });
+                    log(`=== Range Query: ${cf} ===`, "info");
+                    log(`Range: ${startKey || "(start)"} to ${endKey || "(end)"}`, "info");
+                    if (result.entries.length === 0) {
+                        log("  (no entries in range)", "info");
+                    } else {
+                        result.entries.forEach((entry) => {
+                            log(`  "${entry.key}" => "${entry.value}"`, "info");
+                        });
+                    }
+                    log(`Total: ${result.entries.length} entries`, "success");
+                } catch (error) {
+                    log(`Range query failed: ${error.message}`, "error");
                 }
             };
 
@@ -474,8 +524,8 @@
                         if (entries.length === 0) {
                             log("  (empty)", "info");
                         } else {
-                            entries.forEach(([key, value]) => {
-                                log(`  "${key}" => "${value}"`, "info");
+                            entries.forEach((entry) => {
+                                log(`  "${entry.key}" => "${entry.value}"`, "info");
                             });
                         }
                     }
