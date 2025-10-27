@@ -939,7 +939,8 @@ impl ColumnFamily {
 
         let mut txn = db.begin_write()?;
 
-        // Inject WAL context if enabled
+        // Inject WAL context if enabled (native platforms only)
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(wal_journal) = &self.wal_journal {
             txn.set_wal_context(
                 self.name.clone(),
@@ -1012,7 +1013,8 @@ impl ColumnFamily {
 
 impl Drop for ColumnFamilyDatabase {
     fn drop(&mut self) {
-        // Shutdown checkpoint manager if it exists
+        // Shutdown checkpoint manager if it exists (native platforms only)
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(checkpoint_mgr) = self.checkpoint_manager.take() {
             // Try to unwrap the Arc - if we're the last owner, we can shutdown gracefully
             if let Ok(manager) = Arc::try_unwrap(checkpoint_mgr) {
@@ -1022,16 +1024,7 @@ impl Drop for ColumnFamilyDatabase {
             // will handle shutdown when they're dropped
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            // Close the header backend to release the file lock
-            let _ = self.header_backend.close();
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            // Close the header backend (WASM/OPFS)
-            let _ = self.header_backend.close();
-        }
+        // Close the header backend to release the file lock (or OPFS handle)
+        let _ = self.header_backend.close();
     }
 }
