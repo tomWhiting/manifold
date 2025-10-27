@@ -81,3 +81,7 @@ harness = false
 [[bench]]
 name = "mixed_workload_benchmark"
 harness = false
+
+[[bench]]
+name = "wal_detailed_benchmark"
+harness = false
