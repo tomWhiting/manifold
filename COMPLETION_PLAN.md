@@ -473,13 +473,13 @@ This section documents important design decisions made during implementation, in
 
 **Key Components:**
 
-- [ ] Create `WasmStorageBackend` in `src/wasm.rs`
+- [x] Create `WasmStorageBackend` in `src/wasm.rs` ✅
   - Conditional compilation with `#[cfg(target_arch = "wasm32")]`
   - Use wasm-bindgen for JavaScript interop with OPFS
   - Hold FileSystemSyncAccessHandle from OPFS API
-  - **Dev Notes:**
+  - **Dev Notes:** Implemented with async `new()` function that obtains OPFS root, creates/opens file handle, and acquires synchronous access handle. Includes manual Send+Sync implementation (safe in Web Worker single-threaded context).
 
-- [ ] Implement StorageBackend trait for WasmStorageBackend
+- [x] Implement StorageBackend trait for WasmStorageBackend ✅
   - `len()`: Query OPFS file size
   - `read()`: Direct OPFS read with offset and buffer
   - `write()`: Direct OPFS write with offset and buffer
@@ -487,24 +487,30 @@ This section documents important design decisions made during implementation, in
   - `sync_data()`: OPFS flush method
   - `close()`: Release OPFS file handle
   - No file locking implementation needed
-  - **Dev Notes:**
+  - **Dev Notes:** All methods implemented using web-sys OPFS APIs. Read/write use FileSystemReadWriteOptions for offset positioning. Error conversion helper translates JavaScript exceptions to io::Error.
 
-- [ ] Add WASM-specific dependencies using cargo add
+- [x] Add WASM-specific dependencies using cargo add ✅
   - `cargo add --target wasm32-unknown-unknown wasm-bindgen`
   - `cargo add --target wasm32-unknown-unknown web-sys --features FileSystemFileHandle,FileSystemSyncAccessHandle`
   - `cargo add --target wasm32-unknown-unknown wasm-bindgen-futures`
   - Use latest versions of all dependencies
-  - **Dev Notes:**
+  - **Dev Notes:** Added wasm-bindgen 0.2.104, js-sys 0.3.81, web-sys 0.3.81 with features: FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemSyncAccessHandle, FileSystemGetFileOptions, FileSystemReadWriteOptions, Window, WorkerGlobalScope. Also added wasm-bindgen-futures 0.4.54.
 
-- [ ] Implement browser capability detection
+- [x] Implement browser capability detection ✅
   - Runtime check for OPFS synchronous access support
   - Clear error messages if requirements not met
   - Graceful handling of unsupported browsers
-  - **Dev Notes:**
+  - **Dev Notes:** Implemented `is_opfs_supported()` function that checks for navigator.storage.getDirectory availability using js_sys::Reflect. Returns bool indicating OPFS support.
 
-- [ ] Handle error mapping
+- [x] Handle error mapping ✅
   - Convert JavaScript exceptions to io::Error
   - Provide descriptive error messages for browser-specific failures
+  - **Dev Notes:** Implemented `js_error_to_io_error()` helper that extracts error messages from JsValue and creates descriptive io::Error instances with context.
+
+- [ ] Create WASM-specific ColumnFamilyDatabase initialization
+  - Bypass FileHandlePool (file-specific, not needed for WASM)
+  - Use WasmStorageBackend directly with PartitionedStorageBackend
+  - Implement builder pattern for WASM context
   - **Dev Notes:**
 
 - [ ] Create WASM-specific example
