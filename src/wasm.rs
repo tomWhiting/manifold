@@ -30,6 +30,32 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{FileSystemFileHandle, FileSystemSyncAccessHandle};
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+    #[wasm_bindgen(js_namespace = console)]
+    fn error(s: &str);
+}
+
+// Set panic hook to get better error messages in WASM
+#[wasm_bindgen(start)]
+pub fn main() {
+    #[cfg(feature = "console_error_panic_hook")]
+    console_error_panic_hook::set_once();
+
+    std::panic::set_hook(Box::new(|info| {
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            format!("Panic: {}", s)
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            format!("Panic: {}", s)
+        } else {
+            format!("Panic at {:?}", info.location())
+        };
+        error(&msg);
+    }));
+}
+
 /// A storage backend that uses the browser's Origin Private File System (OPFS).
 ///
 /// This backend implements the [`StorageBackend`] trait using OPFS synchronous access handles,
@@ -39,6 +65,7 @@ use web_sys::{FileSystemFileHandle, FileSystemSyncAccessHandle};
 ///
 /// The backend uses internal locking to ensure thread-safe access to the OPFS file handle,
 /// though in practice WASM is single-threaded within a Web Worker context.
+#[wasm_bindgen]
 pub struct WasmStorageBackend {
     /// The OPFS synchronous access handle for file operations
     handle: Arc<Mutex<FileSystemSyncAccessHandle>>,
@@ -62,39 +89,30 @@ impl std::fmt::Debug for WasmStorageBackend {
 unsafe impl Send for WasmStorageBackend {}
 unsafe impl Sync for WasmStorageBackend {}
 
+#[wasm_bindgen]
 impl WasmStorageBackend {
     /// Creates a new WASM storage backend for the given file.
     ///
     /// This function must be called from a Web Worker context where OPFS synchronous
     /// access is available.
-    ///
-    /// # Arguments
-    ///
-    /// * `file_name` - Name of the file to create/open in OPFS
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Not running in a Web Worker context
-    /// - OPFS is not supported by the browser
-    /// - File cannot be created or opened
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let backend = WasmStorageBackend::new("database.db").await?;
-    /// ```
-    pub async fn new(file_name: &str) -> Result<Self, io::Error> {
+    #[wasm_bindgen(constructor)]
+    pub async fn new(file_name: &str) -> Result<WasmStorageBackend, JsValue> {
         // Get the OPFS root directory
-        let root = Self::get_opfs_root().await?;
+        let root = Self::get_opfs_root()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to get OPFS root: {}", e)))?;
 
         // Get or create the file handle
-        let file_handle = Self::get_file_handle(&root, file_name).await?;
+        let file_handle = Self::get_file_handle(&root, file_name)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to get file handle: {}", e)))?;
 
         // Create a synchronous access handle (only available in Web Workers)
-        let sync_handle = Self::create_sync_handle(&file_handle).await?;
+        let sync_handle = Self::create_sync_handle(&file_handle)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to create sync handle: {}", e)))?;
 
-        Ok(Self {
+        Ok(WasmStorageBackend {
             handle: Arc::new(Mutex::new(sync_handle)),
             file_name: file_name.to_string(),
         })
@@ -404,6 +422,131 @@ pub fn is_opfs_supported() -> bool {
     };
 
     get_directory.is_function()
+}
+
+/// WASM-specific wrapper for ColumnFamilyDatabase that provides a JavaScript-friendly API
+#[wasm_bindgen]
+pub struct WasmDatabase {
+    db: crate::column_family::ColumnFamilyDatabase,
+}
+
+#[wasm_bindgen]
+impl WasmDatabase {
+    /// Opens or creates a database with the given file name
+    #[wasm_bindgen(constructor)]
+    pub async fn new(file_name: String) -> Result<WasmDatabase, JsValue> {
+        let backend = WasmStorageBackend::new(&file_name).await?;
+        let backend_arc: Arc<dyn StorageBackend> = Arc::new(backend);
+
+        let db = crate::column_family::ColumnFamilyDatabase::open_with_backend_internal(
+            file_name,
+            backend_arc,
+            0, // pool_size: 0 disables WAL (not yet implemented for WASM)
+        )
+        .map_err(|e| JsValue::from_str(&format!("Failed to open database: {}", e)))?;
+
+        Ok(WasmDatabase { db })
+    }
+
+    /// Lists all column family names
+    #[wasm_bindgen(js_name = listColumnFamilies)]
+    pub fn list_column_families(&self) -> Vec<String> {
+        self.db.list_column_families()
+    }
+
+    /// Creates a new column family
+    #[wasm_bindgen(js_name = createColumnFamily)]
+    pub fn create_column_family(&self, name: String) -> Result<(), JsValue> {
+        self.db
+            .create_column_family(name, None)
+            .map_err(|e| JsValue::from_str(&format!("Failed to create column family: {}", e)))?;
+        Ok(())
+    }
+
+    /// Gets a column family, creating it if it doesn't exist
+    #[wasm_bindgen(js_name = columnFamilyOrCreate)]
+    pub fn column_family_or_create(&self, name: String) -> Result<WasmColumnFamily, JsValue> {
+        let cf = self
+            .db
+            .column_family_or_create(&name)
+            .map_err(|e| JsValue::from_str(&format!("Failed to get column family: {}", e)))?;
+        Ok(WasmColumnFamily { cf })
+    }
+
+    /// Gets an existing column family
+    #[wasm_bindgen(js_name = columnFamily)]
+    pub fn column_family(&self, name: String) -> Result<WasmColumnFamily, JsValue> {
+        let cf = self
+            .db
+            .column_family(&name)
+            .map_err(|e| JsValue::from_str(&format!("Column family not found: {}", e)))?;
+        Ok(WasmColumnFamily { cf })
+    }
+}
+
+/// WASM-specific wrapper for ColumnFamily
+#[wasm_bindgen]
+pub struct WasmColumnFamily {
+    cf: crate::column_family::ColumnFamily,
+}
+
+#[wasm_bindgen]
+impl WasmColumnFamily {
+    /// Writes a key-value pair atomically
+    pub fn write(&self, key: String, value: String) -> Result<(), JsValue> {
+        use crate::TableDefinition;
+
+        let txn = self.cf.begin_write().map_err(|e| {
+            error(&format!("begin_write error: {}", e));
+            JsValue::from_str(&format!("Failed to begin write: {}", e))
+        })?;
+
+        {
+            let table_def: TableDefinition<String, String> = TableDefinition::new("data");
+            let mut table = txn.open_table(table_def).map_err(|e| {
+                error(&format!("open_table error: {}", e));
+                JsValue::from_str(&format!("Failed to open table: {}", e))
+            })?;
+
+            table.insert(&key, &value).map_err(|e| {
+                error(&format!(
+                    "insert error: {} (key={}, value={})",
+                    e, key, value
+                ));
+                JsValue::from_str(&format!("Failed to insert: {}", e))
+            })?;
+        }
+
+        txn.commit().map_err(|e| {
+            error(&format!("commit error: {}", e));
+            JsValue::from_str(&format!("Failed to commit: {}", e))
+        })?;
+
+        Ok(())
+    }
+
+    /// Reads a value by key
+    pub fn read(&self, key: String) -> Result<Option<String>, JsValue> {
+        use crate::{ReadableTable, TableDefinition};
+
+        let txn = self.cf.begin_read().map_err(|e| {
+            error(&format!("begin_read error: {}", e));
+            JsValue::from_str(&format!("Failed to begin read: {}", e))
+        })?;
+
+        let table_def: TableDefinition<String, String> = TableDefinition::new("data");
+        let table = txn.open_table(table_def).map_err(|e| {
+            error(&format!("open_table error: {}", e));
+            JsValue::from_str(&format!("Failed to open table: {}", e))
+        })?;
+
+        let value = table.get(&key).map_err(|e| {
+            error(&format!("get error: {} (key={})", e, key));
+            JsValue::from_str(&format!("Failed to get: {}", e))
+        })?;
+
+        Ok(value.map(|v| v.value().clone()))
+    }
 }
 
 #[cfg(test)]

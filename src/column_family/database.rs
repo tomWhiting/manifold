@@ -256,8 +256,8 @@ impl ColumnFamilyDatabase {
     /// )?;
     /// ```
     #[cfg(target_arch = "wasm32")]
-    pub fn open_with_backend(
-        file_name: impl Into<String>,
+    pub(crate) fn open_with_backend_internal(
+        file_name: String,
         backend: Arc<dyn StorageBackend>,
         pool_size: usize,
     ) -> Result<Self, DatabaseError> {

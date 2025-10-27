@@ -702,6 +702,7 @@ impl TransactionalMemory {
         system_root: Option<BtreeHeader>,
         transaction_id: TransactionId,
     ) -> Result {
+        #[cfg(not(target_arch = "wasm32"))]
         let commit_start = std::time::Instant::now();
         // All mutable pages must be dropped, this ensures that when a transaction completes
         // no more writes can happen to the pages it allocated. Thus it is safe to make them visible
@@ -717,15 +718,20 @@ impl TransactionalMemory {
         drop(unpersisted);
         drop(allocated_since_commit);
 
+        #[cfg(not(target_arch = "wasm32"))]
         let barrier_start = std::time::Instant::now();
         self.storage.write_barrier()?;
-        let barrier_time = barrier_start.elapsed();
-        if barrier_time.as_millis() > 5 {
-            eprintln!("[PERF] write_barrier took: {barrier_time:?}");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let barrier_time = barrier_start.elapsed();
+            if barrier_time.as_millis() > 5 {
+                eprintln!("[PERF] write_barrier took: {barrier_time:?}");
+            }
         }
 
         // CRITICAL OPTIMIZATION: Minimize lock hold time by using lock-free header snapshot
         // This is the key bottleneck fix for concurrent column family writes
+        #[cfg(not(target_arch = "wasm32"))]
         let header_lock_start = std::time::Instant::now();
         let header_update = {
             let mut state = self.state.lock().unwrap();
@@ -735,6 +741,7 @@ impl TransactionalMemory {
             secondary.system_root = system_root;
             state.header.clone()
         }; // Lock released here - much faster!
+        #[cfg(not(target_arch = "wasm32"))]
         let header_lock_time = header_lock_start.elapsed();
 
         // Update lock-free snapshot outside the lock
@@ -743,11 +750,14 @@ impl TransactionalMemory {
         // TODO: maybe we can remove this flag and just update the in-memory DatabaseHeader state?
         self.read_from_secondary.store(true, Ordering::Release);
 
-        let total_commit_time = commit_start.elapsed();
-        if total_commit_time.as_millis() > 10 {
-            eprintln!(
-                "[PERF] non_durable_commit total: {total_commit_time:?} (barrier: {barrier_time:?}, header_lock: {header_lock_time:?})"
-            );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let total_commit_time = commit_start.elapsed();
+            if total_commit_time.as_millis() > 10 {
+                eprintln!(
+                    "[PERF] non_durable_commit total: {total_commit_time:?} (barrier: {barrier_time:?}, header_lock: {header_lock_time:?})"
+                );
+            }
         }
 
         Ok(())
@@ -1031,11 +1041,15 @@ impl TransactionalMemory {
         let required_pages = allocation_size.div_ceil(self.get_page_size());
         let required_order = ceil_log2(required_pages);
 
+        #[cfg(not(target_arch = "wasm32"))]
         let lock_start = std::time::Instant::now();
         let mut state = self.state.lock().unwrap();
-        let lock_wait = lock_start.elapsed();
-        if lock_wait.as_millis() > 1 {
-            eprintln!("[PERF] allocate_helper lock wait: {lock_wait:?}");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                eprintln!("[PERF] allocate_helper lock wait: {lock_wait:?}");
+            }
         }
 
         let page_number = if let Some(page_number) =
