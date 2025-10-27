@@ -58,8 +58,8 @@ fn test_wal_invalid_magic_number() {
 
     // If the database opens, the previously committed data should still be accessible
     // (it was flushed before we corrupted the WAL)
-    if let Ok(db) = db_result {
-        if let Ok(cf) = db.column_family("test_cf") {
+    if let Ok(db) = db_result
+        && let Ok(cf) = db.column_family("test_cf") {
             let read_txn = cf.begin_read().unwrap();
             let table = read_txn.open_table(TEST_TABLE).unwrap();
             // Data committed before corruption should be readable
@@ -68,7 +68,6 @@ fn test_wal_invalid_magic_number() {
                 "persisted_before_corruption"
             );
         }
-    }
     // If the database refuses to open due to corruption, that's also valid behavior
 }
 
@@ -120,8 +119,8 @@ fn test_wal_unsupported_version() {
         .open(&db_path);
 
     // If opens, previously persisted data should be accessible
-    if let Ok(db) = db_result {
-        if let Ok(cf) = db.column_family("test_cf") {
+    if let Ok(db) = db_result
+        && let Ok(cf) = db.column_family("test_cf") {
             let read_txn = cf.begin_read().unwrap();
             let table = read_txn.open_table(TEST_TABLE).unwrap();
             assert_eq!(
@@ -129,7 +128,6 @@ fn test_wal_unsupported_version() {
                 "persisted_data"
             );
         }
-    }
     // Refusing to open is also acceptable
 }
 
@@ -184,8 +182,8 @@ fn test_wal_header_crc_mismatch() {
         .open(&db_path);
 
     // If opens, verify data integrity
-    if let Ok(db) = db_result {
-        if let Ok(cf) = db.column_family("test_cf") {
+    if let Ok(db) = db_result
+        && let Ok(cf) = db.column_family("test_cf") {
             let read_txn = cf.begin_read().unwrap();
             let table = read_txn.open_table(TEST_TABLE).unwrap();
             assert_eq!(
@@ -193,7 +191,6 @@ fn test_wal_header_crc_mismatch() {
                 "crc_test_data"
             );
         }
-    }
     // Refusing to open due to CRC failure is also valid
 }
 

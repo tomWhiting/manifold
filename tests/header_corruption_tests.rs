@@ -30,10 +30,7 @@ fn test_corrupted_magic_number() {
 
     // Corrupt magic number
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let mut file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         file.seek(SeekFrom::Start(0)).unwrap();
         file.write_all(b"CORRUPTED").unwrap();
@@ -66,10 +63,7 @@ fn test_corrupted_header_crc() {
 
     // Corrupt some bytes in the header (not magic number)
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let mut file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         // Corrupt version byte
         file.seek(SeekFrom::Start(9)).unwrap();
@@ -105,10 +99,7 @@ fn test_truncated_header() {
 
     // Truncate file to partial header
     {
-        let file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         file.set_len(100).unwrap(); // Less than PAGE_SIZE
         file.sync_all().unwrap();
@@ -140,10 +131,7 @@ fn test_random_byte_corruption() {
 
     // Corrupt random bytes in the middle of the header
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let mut file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         file.seek(SeekFrom::Start(500)).unwrap();
         file.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
@@ -174,10 +162,7 @@ fn test_corrupted_cf_name_invalid_utf8() {
 
     // Corrupt CF name with invalid UTF-8
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let mut file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         // Find approximate location of CF name and corrupt it
         // This is after magic (9) + version (1) + CF count (4) + CF name length (4)
@@ -189,10 +174,7 @@ fn test_corrupted_cf_name_invalid_utf8() {
     // Should detect corruption (either via CRC or UTF-8 validation)
     let result = ColumnFamilyDatabase::open(&db_path);
 
-    assert!(
-        result.is_err(),
-        "Should detect corrupted CF name"
-    );
+    assert!(result.is_err(), "Should detect corrupted CF name");
 }
 
 /// Test detection of overlapping segment ranges
@@ -207,8 +189,7 @@ fn test_overlapping_segments_detection() {
 
     // Create valid database
     let db = ColumnFamilyDatabase::open(&db_path).unwrap();
-    db.create_column_family("cf1", Some(1024 * 1024))
-        .unwrap();
+    db.create_column_family("cf1", Some(1024 * 1024)).unwrap();
 
     // The validation happens during header parsing
     // Overlapping segments would be caught by MasterHeader::validate()
@@ -232,10 +213,7 @@ fn test_corruption_error_messages_are_clear() {
 
     // Corrupt header
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let mut file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         file.seek(SeekFrom::Start(100)).unwrap();
         file.write_all(&[0xAA; 50]).unwrap();
@@ -279,10 +257,7 @@ fn test_unsupported_version_error() {
 
     // Change version to unsupported value
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let mut file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         file.seek(SeekFrom::Start(9)).unwrap(); // After magic number
         file.write_all(&[99]).unwrap(); // Future version
@@ -315,10 +290,7 @@ fn test_data_survives_header_corruption() {
 
     // Corrupt header (not the data regions)
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let mut file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         file.seek(SeekFrom::Start(200)).unwrap();
         file.write_all(&[0xBB; 20]).unwrap();
@@ -346,10 +318,7 @@ fn test_recover_by_recreating() {
     }
 
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&db_path)
-            .unwrap();
+        let mut file = OpenOptions::new().write(true).open(&db_path).unwrap();
 
         file.seek(SeekFrom::Start(0)).unwrap();
         file.write_all(&[0xFF; 4096]).unwrap(); // Corrupt entire header
@@ -383,6 +352,7 @@ fn test_zero_length_file() {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&db_path)
             .unwrap();
 
@@ -409,6 +379,7 @@ fn test_partial_header_only_magic() {
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&db_path)
             .unwrap();
 

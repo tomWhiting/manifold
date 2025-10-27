@@ -157,7 +157,7 @@ fn test_concurrent_large_value_writes() {
 
     // Create multiple CFs
     for i in 0..4 {
-        db.create_column_family(&format!("cf{}", i), None).unwrap();
+        db.create_column_family(format!("cf{}", i), None).unwrap();
     }
 
     let mut handles = vec![];

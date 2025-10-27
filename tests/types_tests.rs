@@ -137,12 +137,12 @@ fn test_i64_roundtrip() {
 fn test_bool_roundtrip() {
     let value_true = true;
     let encoded_true = <bool>::as_bytes(&value_true);
-    let decoded_true = <bool>::from_bytes(encoded_true.as_ref());
+    let decoded_true = <bool>::from_bytes(encoded_true);
     assert_eq!(decoded_true, value_true);
 
     let value_false = false;
     let encoded_false = <bool>::as_bytes(&value_false);
-    let decoded_false = <bool>::from_bytes(encoded_false.as_ref());
+    let decoded_false = <bool>::from_bytes(encoded_false);
     assert_eq!(decoded_false, value_false);
 }
 
@@ -158,7 +158,7 @@ fn test_str_roundtrip() {
 fn test_string_roundtrip() {
     let value = String::from("test string");
     let encoded = <String>::as_bytes(&value);
-    let decoded = <String>::from_bytes(encoded.as_ref());
+    let decoded = <String>::from_bytes(encoded);
     assert_eq!(decoded, value);
 }
 
@@ -166,7 +166,7 @@ fn test_string_roundtrip() {
 fn test_bytes_roundtrip() {
     let value: &[u8] = &[1, 2, 3, 4, 5];
     let encoded = <&[u8]>::as_bytes(&value);
-    let decoded = <&[u8]>::from_bytes(encoded.as_ref());
+    let decoded = <&[u8]>::from_bytes(encoded);
     assert_eq!(decoded, value);
 }
 
@@ -222,7 +222,7 @@ fn test_empty_str() {
 fn test_empty_bytes() {
     let value: &[u8] = &[];
     let encoded = <&[u8]>::as_bytes(&value);
-    let decoded = <&[u8]>::from_bytes(encoded.as_ref());
+    let decoded = <&[u8]>::from_bytes(encoded);
     assert_eq!(decoded, value);
 }
 
@@ -239,7 +239,7 @@ fn test_large_bytes() {
     let value: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
     let value_slice = value.as_slice();
     let encoded = <&[u8]>::as_bytes(&value_slice);
-    let decoded = <&[u8]>::from_bytes(encoded.as_ref());
+    let decoded = <&[u8]>::from_bytes(encoded);
     assert_eq!(decoded, value_slice);
 }
 

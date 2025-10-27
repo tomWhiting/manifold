@@ -330,7 +330,7 @@ fn test_commit_error_into_error() {
 
 #[test]
 fn test_error_from_io_error() {
-    let io_err = io::Error::new(io::ErrorKind::Other, "test error");
+    let io_err = io::Error::other("test error");
     let err: Error = io_err.into();
     match err {
         Error::Io(_) => {}

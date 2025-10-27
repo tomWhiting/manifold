@@ -9,8 +9,6 @@
 
 use manifold::TableDefinition;
 use manifold::column_family::ColumnFamilyDatabase;
-use std::sync::Arc;
-use std::thread;
 use tempfile::NamedTempFile;
 
 const TEST_TABLE: TableDefinition<&str, &str> = TableDefinition::new("test");
@@ -129,8 +127,8 @@ fn test_corrupted_storage_detection() {
     let db_result = ColumnFamilyDatabase::open(&db_path);
 
     // If database opens, try to access the data
-    if let Ok(db) = db_result {
-        if let Ok(cf) = db.column_family("test_cf") {
+    if let Ok(db) = db_result
+        && let Ok(cf) = db.column_family("test_cf") {
             let read_result = cf.begin_read();
 
             // Some level of corruption detection should occur
@@ -153,7 +151,6 @@ fn test_corrupted_storage_detection() {
                 }
             }
         }
-    }
     // Database may refuse to open, which is also acceptable
 }
 

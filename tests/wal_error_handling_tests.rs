@@ -469,7 +469,7 @@ fn test_concurrent_wal_writes_no_corruption() {
 
     // Create multiple CFs
     for i in 0..4 {
-        db.create_column_family(&format!("cf{}", i), None).unwrap();
+        db.create_column_family(format!("cf{}", i), None).unwrap();
     }
 
     // Spawn concurrent writers

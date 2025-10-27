@@ -184,9 +184,10 @@ impl WALJournal {
             .create(true)
             .open(path)?;
 
-        let backend = Arc::new(FileBackend::new(file).map_err(|e| {
-            io::Error::other(format!("Failed to create FileBackend: {e}"))
-        })?);
+        let backend = Arc::new(
+            FileBackend::new(file)
+                .map_err(|e| io::Error::other(format!("Failed to create FileBackend: {e}")))?,
+        );
         Self::new(backend)
     }
 
@@ -366,7 +367,8 @@ impl WALJournal {
             let stored_crc = u32::from_le_bytes(crc_buf);
             let computed_crc = crc32fast::hash(&entry_data);
             if computed_crc != stored_crc {
-                eprintln!("WAL entry CRC mismatch - stopping replay");
+                // CRC mismatch detected - stop replay to prevent corruption
+                // This is expected when recovering from incomplete writes
                 break;
             }
 

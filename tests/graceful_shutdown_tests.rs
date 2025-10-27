@@ -428,7 +428,7 @@ fn test_concurrent_shutdown() {
 
     // Create multiple column families for concurrent access
     for i in 0..4 {
-        db.create_column_family(&format!("cf_{}", i), None).unwrap();
+        db.create_column_family(format!("cf_{}", i), None).unwrap();
     }
 
     let should_stop = Arc::new(AtomicBool::new(false));
