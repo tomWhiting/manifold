@@ -26,6 +26,7 @@ fjall = "=2.11"
 rusqlite = { version = "0.37", features = ["bundled"] }
 comfy-table = "7.0.1"
 env_logger = "0.11"
+redb2_6 = { version = "=2.6.0", package = "redb" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 io-uring = "0.7.4"
@@ -84,4 +85,8 @@ harness = false
 
 [[bench]]
 name = "wal_detailed_benchmark"
+harness = false
+
+[[bench]]
+name = "redb_comparison_benchmark"
 harness = false
