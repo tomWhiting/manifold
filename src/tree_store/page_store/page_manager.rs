@@ -702,8 +702,6 @@ impl TransactionalMemory {
         system_root: Option<BtreeHeader>,
         transaction_id: TransactionId,
     ) -> Result {
-        #[cfg(not(target_arch = "wasm32"))]
-        let commit_start = std::time::Instant::now();
         // All mutable pages must be dropped, this ensures that when a transaction completes
         // no more writes can happen to the pages it allocated. Thus it is safe to make them visible
         // to future read transactions
@@ -719,8 +717,13 @@ impl TransactionalMemory {
         drop(allocated_since_commit);
 
         #[cfg(not(target_arch = "wasm32"))]
+        let commit_start = std::time::Instant::now();
+
+        #[cfg(not(target_arch = "wasm32"))]
         let barrier_start = std::time::Instant::now();
+
         self.storage.write_barrier()?;
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             let barrier_time = barrier_start.elapsed();
@@ -733,6 +736,7 @@ impl TransactionalMemory {
         // This is the key bottleneck fix for concurrent column family writes
         #[cfg(not(target_arch = "wasm32"))]
         let header_lock_start = std::time::Instant::now();
+
         let header_update = {
             let mut state = self.state.lock().unwrap();
             let secondary = state.header.secondary_slot_mut();
@@ -741,8 +745,6 @@ impl TransactionalMemory {
             secondary.system_root = system_root;
             state.header.clone()
         }; // Lock released here - much faster!
-        #[cfg(not(target_arch = "wasm32"))]
-        let header_lock_time = header_lock_start.elapsed();
 
         // Update lock-free snapshot outside the lock
         self.header_snapshot.store(Arc::new(header_update));
@@ -753,6 +755,8 @@ impl TransactionalMemory {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let total_commit_time = commit_start.elapsed();
+            let barrier_time = barrier_start.elapsed();
+            let header_lock_time = header_lock_start.elapsed();
             if total_commit_time.as_millis() > 10 {
                 eprintln!(
                     "[PERF] non_durable_commit total: {total_commit_time:?} (barrier: {barrier_time:?}, header_lock: {header_lock_time:?})"
