@@ -507,17 +507,17 @@ This section documents important design decisions made during implementation, in
   - Provide descriptive error messages for browser-specific failures
   - **Dev Notes:** Implemented `js_error_to_io_error()` helper that extracts error messages from JsValue and creates descriptive io::Error instances with context.
 
-- [ ] Create WASM-specific ColumnFamilyDatabase initialization
+- [x] Create WASM-specific ColumnFamilyDatabase initialization ✅
   - Bypass FileHandlePool (file-specific, not needed for WASM)
   - Use WasmStorageBackend directly with PartitionedStorageBackend
   - Implement builder pattern for WASM context
-  - **Dev Notes:**
+  - **Dev Notes:** Implemented `open_with_backend()` method that accepts Arc<dyn StorageBackend> and pool_size. Added conditional compilation throughout database.rs, state.rs, and builder.rs to handle WASM vs native differences. WASM path uses simpler initialization without file pooling. ColumnFamily struct has WASM-specific fields. Successfully compiles for wasm32-unknown-unknown target.
 
-- [ ] Create WASM-specific example
+- [ ] Create WASM-specific example (In Progress)
   - Web page with Web Worker demonstrating ColumnFamilyDatabase in browser
   - Show multiple column families with concurrent access
   - Demonstrate persistence across page reloads
-  - Show WAL group commit working in browser context
+  - Note: WAL not yet implemented for WASM (future work)
   - Located in `examples/wasm/` with index.html, worker.js, README.md
   - **Dev Notes:**
 
@@ -536,21 +536,25 @@ This section documents important design decisions made during implementation, in
   - **Dev Notes:**
 
 **Files Modified:**
-- Create: `src/wasm.rs`
-- Modify: `src/lib.rs` (conditional module declaration and export)
-- Create: `examples/wasm/index.html`
-- Create: `examples/wasm/worker.js`
-- Create: `examples/wasm/README.md`
-- Modify: `Cargo.toml` (WASM target-specific dependencies)
+- Create: `src/wasm.rs` ✅
+- Modify: `src/lib.rs` (conditional module declaration and export) ✅
+- Modify: `src/column_family/database.rs` (WASM conditional compilation) ✅
+- Modify: `src/column_family/state.rs` (WASM ensure_database_wasm) ✅
+- Modify: `src/column_family/builder.rs` (conditional for native only) ✅
+- Modify: `src/column_family/mod.rs` (conditional exports) ✅
+- Create: `examples/wasm/index.html` (Pending)
+- Create: `examples/wasm/worker.js` (Pending)
+- Create: `examples/wasm/README.md` (Pending)
+- Modify: `Cargo.toml` (WASM target-specific dependencies) ✅
 
 **Dependencies:** Phases 1-5 complete (especially Phase 5.6 WAL and Phase 5.7 API simplification)
 
-**Estimated Time:** 8-10 hours
-- Core WasmStorageBackend implementation: 2 hours
-- Integration & conditional compilation: 1 hour
-- Unit tests with wasm-bindgen-test: 1 hour
-- Example web app: 2 hours
-- Browser compatibility testing & iteration: 2-4 hours
+**Estimated Time:** 8-10 hours (5 hours completed)
+- Core WasmStorageBackend implementation: 2 hours ✅
+- Integration & conditional compilation: 3 hours ✅ (took longer than estimated)
+- Unit tests with wasm-bindgen-test: 1 hour (Pending)
+- Example web app: 2 hours (In Progress)
+- Browser compatibility testing & iteration: 2-4 hours (Pending)
 
 **Success Criteria:**
 - ColumnFamilyDatabase compiles and runs in wasm32-unknown-unknown target
