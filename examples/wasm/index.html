@@ -1,489 +1,515 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manifold WASM Column Family Database Demo</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Manifold WASM Column Family Database Demo</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+                    Cantarell, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 20px;
+            }
 
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
-        }
+            .container {
+                max-width: 900px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 12px;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                overflow: hidden;
+            }
 
-        header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
+            header {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 30px;
+                text-align: center;
+            }
 
-        header h1 {
-            font-size: 2rem;
-            margin-bottom: 10px;
-        }
+            header h1 {
+                font-size: 2rem;
+                margin-bottom: 10px;
+            }
 
-        header p {
-            opacity: 0.9;
-            font-size: 0.95rem;
-        }
+            header p {
+                opacity: 0.9;
+                font-size: 0.95rem;
+            }
 
-        .status {
-            padding: 20px 30px;
-            background: #f8f9fa;
-            border-bottom: 1px solid #e9ecef;
-        }
+            .status {
+                padding: 20px 30px;
+                background: #f8f9fa;
+                border-bottom: 1px solid #e9ecef;
+            }
 
-        .status-indicator {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 500;
-        }
+            .status-indicator {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 500;
+            }
 
-        .status-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: #6c757d;
-            animation: pulse 2s infinite;
-        }
+            .status-dot {
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                background: #6c757d;
+                animation: pulse 2s infinite;
+            }
 
-        .status-dot.ready {
-            background: #28a745;
-        }
+            .status-dot.ready {
+                background: #28a745;
+            }
 
-        .status-dot.error {
-            background: #dc3545;
-        }
+            .status-dot.error {
+                background: #dc3545;
+            }
 
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
+            @keyframes pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.5;
+                }
+            }
 
-        .main-content {
-            padding: 30px;
-        }
+            .main-content {
+                padding: 30px;
+            }
 
-        .section {
-            margin-bottom: 30px;
-        }
+            .section {
+                margin-bottom: 30px;
+            }
 
-        .section h2 {
-            font-size: 1.4rem;
-            margin-bottom: 15px;
-            color: #333;
-        }
+            .section h2 {
+                font-size: 1.4rem;
+                margin-bottom: 15px;
+                color: #333;
+            }
 
-        .input-group {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
+            .input-group {
+                display: flex;
+                gap: 10px;
+                margin-bottom: 15px;
+            }
 
-        input, select, button {
-            padding: 10px 15px;
-            font-size: 0.95rem;
-            border: 1px solid #dee2e6;
-            border-radius: 6px;
-        }
+            input,
+            select,
+            button {
+                padding: 10px 15px;
+                font-size: 0.95rem;
+                border: 1px solid #dee2e6;
+                border-radius: 6px;
+            }
 
-        input, select {
-            flex: 1;
-        }
+            input,
+            select {
+                flex: 1;
+            }
 
-        input:focus, select:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
+            input:focus,
+            select:focus {
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }
 
-        button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            cursor: pointer;
-            font-weight: 500;
-            transition: transform 0.2s, box-shadow 0.2s;
-            white-space: nowrap;
-        }
+            button {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                cursor: pointer;
+                font-weight: 500;
+                transition:
+                    transform 0.2s,
+                    box-shadow 0.2s;
+                white-space: nowrap;
+            }
 
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
+            button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            }
 
-        button:active {
-            transform: translateY(0);
-        }
+            button:active {
+                transform: translateY(0);
+            }
 
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
+            button:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+                transform: none;
+            }
 
-        .button-group {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
+            .button-group {
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
 
-        .output {
-            background: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 6px;
-            padding: 15px;
-            font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 0.85rem;
-            max-height: 300px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
+            .output {
+                background: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 6px;
+                padding: 15px;
+                font-family: "Monaco", "Menlo", monospace;
+                font-size: 0.85rem;
+                max-height: 300px;
+                overflow-y: auto;
+                white-space: pre-wrap;
+                word-break: break-word;
+            }
 
-        .log-entry {
-            margin-bottom: 8px;
-            padding: 4px 0;
-        }
+            .log-entry {
+                margin-bottom: 8px;
+                padding: 4px 0;
+            }
 
-        .log-entry.success {
-            color: #28a745;
-        }
+            .log-entry.success {
+                color: #28a745;
+            }
 
-        .log-entry.error {
-            color: #dc3545;
-        }
+            .log-entry.error {
+                color: #dc3545;
+            }
 
-        .log-entry.info {
-            color: #17a2b8;
-        }
+            .log-entry.info {
+                color: #17a2b8;
+            }
 
-        .cf-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-top: 10px;
-        }
+            .cf-list {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                margin-top: 10px;
+            }
 
-        .cf-badge {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 0.85rem;
-            font-weight: 500;
-        }
+            .cf-badge {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 6px 12px;
+                border-radius: 20px;
+                font-size: 0.85rem;
+                font-weight: 500;
+            }
 
-        footer {
-            padding: 20px 30px;
-            background: #f8f9fa;
-            border-top: 1px solid #e9ecef;
-            text-align: center;
-            color: #6c757d;
-            font-size: 0.85rem;
-        }
+            footer {
+                padding: 20px 30px;
+                background: #f8f9fa;
+                border-top: 1px solid #e9ecef;
+                text-align: center;
+                color: #6c757d;
+                font-size: 0.85rem;
+            }
 
-        .warning-box {
-            background: #fff3cd;
-            border: 1px solid #ffc107;
-            border-radius: 6px;
-            padding: 15px;
-            margin-bottom: 20px;
-        }
+            .warning-box {
+                background: #fff3cd;
+                border: 1px solid #ffc107;
+                border-radius: 6px;
+                padding: 15px;
+                margin-bottom: 20px;
+            }
 
-        .warning-box strong {
-            color: #856404;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <h1>🚀 Manifold WASM Database Demo</h1>
-            <p>Column Family Database with OPFS Storage in Your Browser</p>
-        </header>
+            .warning-box strong {
+                color: #856404;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>Manifold WASM Database Demo</h1>
+                <p>Column Family Database with OPFS Storage in Your Browser</p>
+            </header>
 
-        <div class="status">
-            <div class="status-indicator">
-                <span class="status-dot" id="statusDot"></span>
-                <span id="statusText">Initializing...</span>
+            <div class="status">
+                <div class="status-indicator">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Initializing...</span>
+                </div>
             </div>
+
+            <div class="main-content">
+                <div class="warning-box" id="warningBox" style="display: none">
+                    <strong>Browser Compatibility:</strong> This demo requires a modern browser with
+                    OPFS support (Chrome 102+, Edge 102+, Safari 15.2+, Firefox 111+) and must run
+                    over HTTPS or localhost.
+                </div>
+
+                <div class="section">
+                    <h2>Column Families</h2>
+                    <div class="input-group">
+                        <input
+                            type="text"
+                            id="cfName"
+                            placeholder="Column family name (e.g., 'users', 'products')"
+                        />
+                        <button onclick="createColumnFamily()">Create Column Family</button>
+                    </div>
+                    <div class="cf-list" id="cfList"></div>
+                </div>
+
+                <div class="section">
+                    <h2>Write Data</h2>
+                    <div class="input-group">
+                        <select id="writeCF">
+                            <option value="">Select column family...</option>
+                        </select>
+                        <input type="text" id="writeKey" placeholder="Key" />
+                        <input type="text" id="writeValue" placeholder="Value" />
+                        <button onclick="writeData()">Write</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>Read Data</h2>
+                    <div class="input</h2>-group">
+                        <select id="readCF">
+                            <option value="">Select column family...</option>
+                        </select>
+                        <input type="text" id="readKey" placeholder="Key" />
+                        <button onclick="readData()">Read</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>Operations</h2>
+                    <div class="button</h2>-group">
+                        <button onclick="listAllData()">List All Data</button>
+                        <button onclick="testPersistence()">Test Persistence</button>
+                        <button onclick="clearLogs()">Clear Logs</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>Logs</h2>
+                    <div class="output" id="logs"></div>
+                </div>
+            </div>
+
+            <footer>
+                <p>Manifold Column Family Database - WASM + OPFS Demo</p>
+                <p style="margin-top: 5px; font-size: 0.75rem">
+                    Persistence survives page reloads - Data stored in Origin Private File System
+                </p>
+            </footer>
         </div>
 
-        <div class="main-content">
-            <div class="warning-box" id="warningBox" style="display: none;">
-                <strong>⚠️ Browser Compatibility:</strong> This demo requires a modern browser with OPFS support (Chrome 102+, Edge 102+, Safari 15.2+, Firefox 111+) and must run over HTTPS or localhost.
-            </div>
+        <script type="module">
+            let worker = null;
+            let messageId = 0;
+            const pendingMessages = new Map();
 
-            <div class="section">
-                <h2>📁 Column Families</h2>
-                <div class="input-group">
-                    <input type="text" id="cfName" placeholder="Column family name (e.g., 'users', 'products')">
-                    <button onclick="createColumnFamily()">Create Column Family</button>
-                </div>
-                <div class="cf-list" id="cfList"></div>
-            </div>
+            function log(message, type = "info") {
+                const logsDiv = document.getElementById("logs");
+                const entry = document.createElement("div");
+                entry.className = `log-entry ${type}`;
+                const timestamp = new Date().toLocaleTimeString();
+                entry.textContent = `[${timestamp}] ${message}`;
+                logsDiv.appendChild(entry);
+                logsDiv.scrollTop = logsDiv.scrollHeight;
+            }
 
-            <div class="section">
-                <h2>✏️ Write Data</h2>
-                <div class="input-group">
-                    <select id="writeCF">
-                        <option value="">Select column family...</option>
-                    </select>
-                    <input type="text" id="writeKey" placeholder="Key">
-                    <input type="text" id="writeValue" placeholder="Value">
-                    <button onclick="writeData()">Write</button>
-                </div>
-            </div>
+            function updateStatus(text, ready = false, error = false) {
+                document.getElementById("statusText").textContent = text;
+                const dot = document.getElementById("statusDot");
+                dot.className = "status-dot";
+                if (ready) dot.classList.add("ready");
+                if (error) dot.classList.add("error");
+            }
 
-            <div class="section">
-                <h2>🔍 Read Data</h2>
-                <div class="input</h2>-group">
-                    <select id="readCF">
-                        <option value="">Select column family...</option>
-                    </select>
-                    <input type="text" id="readKey" placeholder="Key">
-                    <button onclick="readData()">Read</button>
-                </div>
-            </div>
+            function updateCFList(columnFamilies) {
+                const cfList = document.getElementById("cfList");
+                const writeCF = document.getElementById("writeCF");
+                const readCF = document.getElementById("readCF");
 
-            <div class="section">
-                <h2>🔧 Operations</h2>
-                <div class="button</h2>-group">
-                    <button onclick="listAllData()">List All Data</button>
-                    <button onclick="testPersistence()">Test Persistence</button>
-                    <button onclick="clearLogs()">Clear Logs</button>
-                </div>
-            </div>
+                cfList.innerHTML = "";
+                writeCF.innerHTML = '<option value="">Select column family...</option>';
+                readCF.innerHTML = '<option value="">Select column family...</option>';
 
-            <div class="section">
-                <h2>📊 Logs</h2>
-                <div class="output" id="logs"></div>
-            </div>
-        </div>
+                columnFamilies.forEach((cf) => {
+                    const badge = document.createElement("div");
+                    badge.className = "cf-badge";
+                    badge.textContent = cf;
+                    cfList.appendChild(badge);
 
-        <footer>
-            <p>Manifold Column Family Database • WASM + OPFS Demo</p>
-            <p style="margin-top: 5px; font-size: 0.75rem;">Persistence survives page reloads • Data stored in Origin Private File System</p>
-        </footer>
-    </div>
+                    const writeOption = document.createElement("option");
+                    writeOption.value = cf;
+                    writeOption.textContent = cf;
+                    writeCF.appendChild(writeOption);
 
-    <script type="module">
-        let worker = null;
-        let messageId = 0;
-        const pendingMessages = new Map();
+                    const readOption = document.createElement("option");
+                    readOption.value = cf;
+                    readOption.textContent = cf;
+                    readCF.appendChild(readOption);
+                });
+            }
 
-        function log(message, type = 'info') {
-            const logsDiv = document.getElementById('logs');
-            const entry = document.createElement('div');
-            entry.className = `log-entry ${type}`;
-            const timestamp = new Date().toLocaleTimeString();
-            entry.textContent = `[${timestamp}] ${message}`;
-            logsDiv.appendChild(entry);
-            logsDiv.scrollTop = logsDiv.scrollHeight;
-        }
+            function sendMessage(type, data = {}) {
+                return new Promise((resolve, reject) => {
+                    const id = messageId++;
+                    pendingMessages.set(id, { resolve, reject });
+                    worker.postMessage({ id, type, data });
+                });
+            }
 
-        function updateStatus(text, ready = false, error = false) {
-            document.getElementById('statusText').textContent = text;
-            const dot = document.getElementById('statusDot');
-            dot.className = 'status-dot';
-            if (ready) dot.classList.add('ready');
-            if (error) dot.classList.add('error');
-        }
+            async function init() {
+                try {
+                    log("Initializing Web Worker...", "info");
+                    worker = new Worker("worker.js", { type: "module" });
 
-        function updateCFList(columnFamilies) {
-            const cfList = document.getElementById('cfList');
-            const writeCF = document.getElementById('writeCF');
-            const readCF = document.getElementById('readCF');
+                    worker.onmessage = (e) => {
+                        const { id, type, data, error } = e.data;
 
-            cfList.innerHTML = '';
-            writeCF.innerHTML = '<option value="">Select column family...</option>';
-            readCF.innerHTML = '<option value="">Select column family...</option>';
+                        if (type === "log") {
+                            log(data.message, data.level);
+                            return;
+                        }
 
-            columnFamilies.forEach(cf => {
-                const badge = document.createElement('div');
-                badge.className = 'cf-badge';
-                badge.textContent = cf;
-                cfList.appendChild(badge);
+                        const pending = pendingMessages.get(id);
+                        if (pending) {
+                            pendingMessages.delete(id);
+                            if (error) {
+                                pending.reject(new Error(error));
+                            } else {
+                                pending.resolve(data);
+                            }
+                        }
+                    };
 
-                const writeOption = document.createElement('option');
-                writeOption.value = cf;
-                writeOption.textContent = cf;
-                writeCF.appendChild(writeOption);
+                    worker.onerror = (error) => {
+                        log(`Worker error: ${error.message}`, "error");
+                        updateStatus("Worker Error", false, true);
+                    };
 
-                const readOption = document.createElement('option');
-                readOption.value = cf;
-                readOption.textContent = cf;
-                readCF.appendChild(readOption);
-            });
-        }
+                    log("Initializing database...", "info");
+                    const result = await sendMessage("init");
 
-        function sendMessage(type, data = {}) {
-            return new Promise((resolve, reject) => {
-                const id = messageId++;
-                pendingMessages.set(id, { resolve, reject });
-                worker.postMessage({ id, type, data });
-            });
-        }
+                    log("Database initialized successfully!", "success");
+                    updateStatus("Ready", true);
+                    updateCFList(result.columnFamilies || []);
+                } catch (error) {
+                    log(`Initialization failed: ${error.message}`, "error");
+                    updateStatus("Error", false, true);
+                    document.getElementById("warningBox").style.display = "block";
+                }
+            }
 
-        async function init() {
-            try {
-                log('Initializing Web Worker...', 'info');
-                worker = new Worker('worker.js', { type: 'module' });
+            window.createColumnFamily = async function () {
+                const name = document.getElementById("cfName").value.trim();
+                if (!name) {
+                    log("Please enter a column family name", "error");
+                    return;
+                }
 
-                worker.onmessage = (e) => {
-                    const { id, type, data, error } = e.data;
+                try {
+                    const result = await sendMessage("createCF", { name });
+                    log(`Created column family: ${name}`, "success");
+                    updateCFList(result.columnFamilies);
+                    document.getElementById("cfName").value = "";
+                } catch (error) {
+                    log(`Failed to create column family: ${error.message}`, "error");
+                }
+            };
 
-                    if (type === 'log') {
-                        log(data.message, data.level);
-                        return;
+            window.writeData = async function () {
+                const cf = document.getElementById("writeCF").value;
+                const key = document.getElementById("writeKey").value.trim();
+                const value = document.getElementById("writeValue").value.trim();
+
+                if (!cf || !key || !value) {
+                    log("Please fill in all fields", "error");
+                    return;
+                }
+
+                try {
+                    await sendMessage("write", { cf, key, value });
+                    log(`Wrote ${cf}["${key}"] = "${value}"`, "success");
+                    document.getElementById("writeKey").value = "";
+                    document.getElementById("writeValue").value = "";
+                } catch (error) {
+                    log(`Write failed: ${error.message}`, "error");
+                }
+            };
+
+            window.readData = async function () {
+                const cf = document.getElementById("readCF").value;
+                const key = document.getElementById("readKey").value.trim();
+
+                if (!cf || !key) {
+                    log("Please select column family and enter key", "error");
+                    return;
+                }
+
+                try {
+                    const result = await sendMessage("read", { cf, key });
+                    if (result.value !== null) {
+                        log(`Read ${cf}["${key}"] = "${result.value}"`, "success");
+                    } else {
+                        log(`Key "${key}" not found in ${cf}`, "info");
                     }
+                } catch (error) {
+                    log(`Read failed: ${error.message}`, "error");
+                }
+            };
 
-                    const pending = pendingMessages.get(id);
-                    if (pending) {
-                        pendingMessages.delete(id);
-                        if (error) {
-                            pending.reject(new Error(error));
+            window.listAllData = async function () {
+                try {
+                    const result = await sendMessage("listAll");
+                    log("=== All Data ===", "info");
+                    for (const [cf, entries] of Object.entries(result.data)) {
+                        log(`Column Family: ${cf}`, "info");
+                        if (entries.length === 0) {
+                            log("  (empty)", "info");
                         } else {
-                            pending.resolve(data);
+                            entries.forEach(([key, value]) => {
+                                log(`  "${key}" => "${value}"`, "info");
+                            });
                         }
                     }
-                };
-
-                worker.onerror = (error) => {
-                    log(`Worker error: ${error.message}`, 'error');
-                    updateStatus('Worker Error', false, true);
-                };
-
-                log('Initializing database...', 'info');
-                const result = await sendMessage('init');
-
-                log('Database initialized successfully!', 'success');
-                updateStatus('Ready', true);
-                updateCFList(result.columnFamilies || []);
-
-            } catch (error) {
-                log(`Initialization failed: ${error.message}`, 'error');
-                updateStatus('Error', false, true);
-                document.getElementById('warningBox').style.display = 'block';
-            }
-        }
-
-        window.createColumnFamily = async function() {
-            const name = document.getElementById('cfName').value.trim();
-            if (!name) {
-                log('Please enter a column family name', 'error');
-                return;
-            }
-
-            try {
-                const result = await sendMessage('createCF', { name });
-                log(`Created column family: ${name}`, 'success');
-                updateCFList(result.columnFamilies);
-                document.getElementById('cfName').value = '';
-            } catch (error) {
-                log(`Failed to create column family: ${error.message}`, 'error');
-            }
-        };
-
-        window.writeData = async function() {
-            const cf = document.getElementById('writeCF').value;
-            const key = document.getElementById('writeKey').value.trim();
-            const value = document.getElementById('writeValue').value.trim();
-
-            if (!cf || !key || !value) {
-                log('Please fill in all fields', 'error');
-                return;
-            }
-
-            try {
-                await sendMessage('write', { cf, key, value });
-                log(`Wrote ${cf}["${key}"] = "${value}"`, 'success');
-                document.getElementById('writeKey').value = '';
-                document.getElementById('writeValue').value = '';
-            } catch (error) {
-                log(`Write failed: ${error.message}`, 'error');
-            }
-        };
-
-        window.readData = async function() {
-            const cf = document.getElementById('readCF').value;
-            const key = document.getElementById('readKey').value.trim();
-
-            if (!cf || !key) {
-                log('Please select column family and enter key', 'error');
-                return;
-            }
-
-            try {
-                const result = await sendMessage('read', { cf, key });
-                if (result.value !== null) {
-                    log(`Read ${cf}["${key}"] = "${result.value}"`, 'success');
-                } else {
-                    log(`Key "${key}" not found in ${cf}`, 'info');
+                    log("=== End ===", "info");
+                } catch (error) {
+                    log(`List failed: ${error.message}`, "error");
                 }
-            } catch (error) {
-                log(`Read failed: ${error.message}`, 'error');
-            }
-        };
+            };
 
-        window.listAllData = async function() {
-            try {
-                const result = await sendMessage('listAll');
-                log('=== All Data ===', 'info');
-                for (const [cf, entries] of Object.entries(result.data)) {
-                    log(`Column Family: ${cf}`, 'info');
-                    if (entries.length === 0) {
-                        log('  (empty)', 'info');
-                    } else {
-                        entries.forEach(([key, value]) => {
-                            log(`  "${key}" => "${value}"`, 'info');
-                        });
-                    }
+            window.testPersistence = async function () {
+                log("Testing persistence...", "info");
+                log("Refresh this page to verify data persists!", "info");
+                try {
+                    const result = await sendMessage("listAll");
+                    const totalEntries = Object.values(result.data).reduce(
+                        (sum, entries) => sum + entries.length,
+                        0,
+                    );
+                    log(
+                        `Currently ${totalEntries} entries stored across ${Object.keys(result.data).length} column families`,
+                        "success",
+                    );
+                } catch (error) {
+                    log(`Test failed: ${error.message}`, "error");
                 }
-                log('=== End ===', 'info');
-            } catch (error) {
-                log(`List failed: ${error.message}`, 'error');
-            }
-        };
+            };
 
-        window.testPersistence = async function() {
-            log('Testing persistence...', 'info');
-            log('Refresh this page to verify data persists!', 'info');
-            try {
-                const result = await sendMessage('listAll');
-                const totalEntries = Object.values(result.data).reduce((sum, entries) => sum + entries.length, 0);
-                log(`Currently ${totalEntries} entries stored across ${Object.keys(result.data).length} column families`, 'success');
-            } catch (error) {
-                log(`Test failed: ${error.message}`, 'error');
-            }
-        };
+            window.clearLogs = function () {
+                document.getElementById("logs").innerHTML = "";
+                log("Logs cleared", "info");
+            };
 
-        window.clearLogs = function() {
-            document.getElementById('logs').innerHTML = '';
-            log('Logs cleared', 'info');
-        };
-
-        // Initialize on page load
-        init();
-    </script>
-</body>
+            // Initialize on page load
+            init();
+        </script>
+    </body>
 </html>

@@ -4,10 +4,10 @@ This example demonstrates using the Manifold column family database in a browser
 
 ## Features
 
-- 🚀 **Column Family Database** running entirely in the browser
-- 💾 **OPFS Storage** for true persistence across page reloads
-- 🔄 **Concurrent Access** via Web Workers
-- ⚡ **Zero Backend** required - fully client-side
+- **Column Family Database** running entirely in the browser
+- **OPFS Storage** for true persistence across page reloads
+- **Concurrent Access** via Web Workers
+- **Zero Backend** required - fully client-side
 
 ## Requirements
 
@@ -45,7 +45,16 @@ This compiles the Rust code to WASM and generates JavaScript bindings in `exampl
 
 You need a local web server with HTTPS support. Options:
 
-**Option A: Using Python (simple, no HTTPS)**
+**Option A: Using uv (recommended for Python users)**
+
+```bash
+cd examples/wasm
+uv run --with http.server python -m http.server 8000
+```
+
+Then open http://localhost:8000
+
+**Option B: Using Python directly (simple, no HTTPS)**
 
 ```bash
 cd examples/wasm
@@ -54,7 +63,7 @@ python -m http.server 8000
 
 Then open http://localhost:8000
 
-**Option B: Using a proper dev server (recommended)**
+**Option C: Using a proper dev server (recommended for HTTPS)**
 
 Install a development server with HTTPS support:
 
@@ -71,7 +80,7 @@ http-server -S -C cert.pem -K key.pem
 
 Or use any other local dev server that supports HTTPS.
 
-**Option C: Chrome with OPFS flag (development only)**
+**Option D: Chrome with OPFS flag (development only)**
 
 Chrome can enable OPFS on insecure origins for testing:
 
@@ -106,7 +115,7 @@ chrome --enable-features=FileSystemAccessAPI,FileSystemAccessAPIExperimental
 1. Write some data
 2. Click "Test Persistence" to see current data count
 3. Refresh the page
-4. Your data is still there! ✨
+4. Your data is still there!
 
 ### Viewing All Data
 
