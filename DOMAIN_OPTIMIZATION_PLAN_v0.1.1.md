@@ -6,99 +6,117 @@ Manifold has achieved its goal as a high-performance, general-purpose embedded c
 
 **Core Principle:** Keep Manifold's core general-purpose and build domain-specific functionality as optional layers on top, implemented as separate crates that depend on Manifold.
 
-**Target Use Case:** Hyperspatial - a multi-modal database requiring vectors (dense, sparse, multi-vector), graph relationships, structured data, time series, and hyperbolic spatial indexing within a single unified system.
-
 **Architecture Strategy:** Use column families as logical collections (e.g., "news_articles", "user_profiles"), with multiple specialized tables within each collection for different data types and indexes. This enables atomic updates across related data while maintaining clean separation of concerns.
 
 ---
 
-## Context: Tables Within Column Families
+## Project Context: Tables Within Column Families
 
-A critical architectural clarification: Manifold's power comes from organizing data into **column families** that contain multiple **tables**.
+**Critical architectural decision made during Phase 3-4 development:**
 
-**Column Family = Logical Collection**
-- Example: "news_articles" column family
-- Represents a cohesive domain entity
-- Shares write transaction isolation
-- All tables within can be updated atomically
+A column family in Manifold is not just a namespace - it's a **logical collection** that can contain multiple tables. Each table is a separate B-tree with its own key-value space, but all tables within a column family:
+- Share the same write transaction isolation
+- Can be updated atomically together
+- Use the same underlying storage segment(s)
+- Benefit from the same WAL group commit batching
 
-**Tables = Different Data Types/Indexes**
-- Example tables within "news_articles":
-  - `articles` - Document content (String → Article)
-  - `vectors_dense` - Dense embeddings (String → [f32; 768])
-  - `vectors_sparse` - Sparse features (String → SparseVector)
-  - `metadata` - Timestamps, authors (String → Metadata)
-  - `sentiment` - Sentiment scores (String → f32)
+**Example organization:**
+```
+Column Family: "news_articles"
+├── Table: "articles"        (String → Article struct)
+├── Table: "vectors_dense"   (String → [f32; 768])
+├── Table: "vectors_sparse"  (String → SparseVector)
+├── Table: "metadata"        (String → Metadata)
+└── Table: "sentiment"       (String → f32)
+```
 
-This organization enables:
-- **Atomic updates** - Insert article + embedding + metadata in one transaction
-- **Efficient queries** - Range scan metadata, look up embedding by article ID
-- **Clean separation** - Different tables for different data shapes
-- **Concurrent access** - Multiple column families allow parallel writes to different collections
+**Why this matters for domain optimizations:**
 
-**Only use separate column families for truly independent collections** (e.g., "news_articles", "user_profiles", "chat_messages").
+When we build domain-specific helpers (VectorTable, GraphTable, etc.), they're not creating new column families - they're organizing multiple tables within a single column family. This is crucial because:
+
+1. **Atomic updates** - Insert article + embedding + metadata in one transaction
+2. **Efficient queries** - Range scan metadata, look up embedding by ID, all within same CF
+3. **Storage efficiency** - Related data in same segments, better cache locality
+4. **Transaction isolation** - One writer per collection, not one per data type
+
+**When to use separate column families:**
+
+Only for truly independent collections with no need for cross-collection atomic updates:
+- `news_articles` vs `user_profiles` vs `chat_messages` - separate CFs
+- But within `news_articles`: article text, embeddings, metadata - same CF, different tables
+
+This understanding shapes how we design the domain optimization crates below.
 
 ---
 
-## Context: Why Domain Layers?
+## Project Context: Why Domain Layers?
 
-Manifold's core provides primitives: key-value storage, transactions, iteration, WAL. While these are sufficient for any workload, specialized domains benefit from higher-level abstractions:
+**Decision point from completion plan Phase 5.7:**
 
-**Vector Workloads** need:
-- Fixed-width storage for efficient memory access
-- Zero-copy reads to avoid allocation overhead
-- Batch insertion optimized for bulk embedding storage
-- Integration points for external vector indexes (HNSW, IVF-PQ)
+After implementing WAL and achieving 4.7x performance improvement, we realized Manifold's core is feature-complete for general-purpose use. The next evolution is not more core features, but **domain-specific helpers** that make common patterns easier.
 
-**Graph Workloads** need:
-- Composite keys for edge representation
-- Bidirectional edge queries (forward and reverse)
-- Efficient "all edges from vertex X" scans
-- Graph algorithm integration
+**Why separate crates instead of core features:**
 
-**Time Series Workloads** need:
-- Timestamp-based key ordering
-- Downsampling across multiple granularities
-- Retention policy enforcement
-- Efficient range queries by time
+1. **Maintainability** - Core stays focused on correctness and performance of key-value primitives
+2. **Optional dependencies** - ML users don't need graph code, graph users don't need ML code
+3. **Independent evolution** - Domain layers can break API, iterate faster, release independently
+4. **Community contributions** - Domain experts can own specific layers without touching core
+5. **Testing isolation** - Each layer tested independently, easier to validate correctness
 
-**Hyperbolic Space Workloads** need:
-- Specialized distance functions (hyperbolic, not Euclidean)
-- Spatial indexing preserving hyperbolic geometry
-- Support for Poincaré disk and hyperboloid models
-- Integration with hyperbolic ML libraries
+**Integration pattern established:**
 
-Rather than bloating Manifold's core with domain-specific code, we build these as **optional layers** that users can choose based on their needs.
+Domain layers provide trait-based abstractions wrapping `ColumnFamily`:
+```rust
+pub trait VectorStore {
+    fn insert(&self, key: &str, vector: &[f32]) -> Result<()>;
+    fn get_zero_copy(&self, key: &str) -> Result<&[f32]>;
+    fn nearest(&self, query: &[f32], k: usize) -> Result<Vec<(String, f32)>>;
+}
+
+// Implementation wraps ColumnFamily, uses internal tables
+impl VectorStore for VectorTable<const DIM: usize> {
+    // Uses cf.open_table("vectors") internally
+}
+```
+
+Users interact with domain-specific APIs, but underneath it's just organized use of Manifold's tables.
 
 ---
 
 ## Architecture: Domain Layers as Separate Crates
 
-Each domain optimization is implemented as a separate crate:
+**Crate organization decided:**
 
 ```
-manifold-core (this repository)
-    ↓ (dependency)
-manifold-vectors     (crate: manifold-vectors)
-manifold-graph       (crate: manifold-graph)
-manifold-timeseries  (crate: manifold-timeseries)
-manifold-hyperbolic  (crate: manifold-hyperbolic)
-    ↓ (used by)
-hyperspatial-manifold (orchestration layer)
+manifold (this repository - core database)
+    └── provides: ColumnFamilyDatabase, Table, WAL, StorageBackend
+
+manifold-vectors (separate crate)
+    └── provides: VectorTable<DIM>, SparseVectorTable, MultiVectorTable
+    └── depends on: manifold
+
+manifold-graph (separate crate)
+    └── provides: GraphTable, edge query APIs
+    └── depends on: manifold
+
+manifold-timeseries (separate crate)
+    └── provides: TimeSeriesTable, downsampling, retention
+    └── depends on: manifold
 ```
 
-**Benefits:**
-1. **Maintainability** - Core stays focused, domain layers evolve independently
-2. **Optional dependencies** - Users only include what they need
-3. **Independent versioning** - Domain layers can release updates without core changes
-4. **Clean testing** - Each layer tested in isolation
-5. **Community contributions** - Domain experts can maintain specific layers
+**User application layer:**
+```rust
+// User can pick and choose
+use manifold::ColumnFamilyDatabase;
+use manifold_vectors::VectorTable;
+use manifold_graph::GraphTable;
 
-**Integration Pattern:**
-- Domain layers provide trait-based abstractions (`VectorStore`, `GraphStore`)
-- These traits wrap Manifold's `ColumnFamily` with specialized methods
-- Users interact with domain-specific APIs, not raw key-value operations
-- Under the hood, domain layers use Manifold's tables efficiently
+// Or use raw Manifold if domain layers don't fit
+```
+
+**Note on hyperspatial:**
+
+Hyperspatial exists as a separate repository with its own requirements. Hyperbolic embeddings, if needed, are just fixed-width vectors (e.g., `VectorTable<17>`) from Phase 1. Custom distance functions and spatial indexing specific to hyperbolic geometry belong in hyperspatial's repository, not in these general-purpose domain layers.
 
 ---
 
@@ -110,95 +128,130 @@ hyperspatial-manifold (orchestration layer)
 
 **Estimated Time:** 12-16 hours
 
-### Context
+### Project Context
 
-Vector embeddings are ubiquitous in modern AI applications:
-- **Sentence embeddings** - Dense 768/1024-dimensional vectors from BERT, RoBERTa
-- **Image embeddings** - Dense 512/2048-dimensional vectors from ResNet, CLIP
-- **Sparse features** - TF-IDF, BM25 scores with thousands of dimensions but < 1% non-zero
-- **Multi-vectors** - Colbert-style token embeddings (sequence of dense vectors)
+**Problem identified during WASM development:**
 
-Current approach: Store as serialized bytes. This works but is inefficient:
-- Deserialization overhead on every read
+When implementing the WASM example, we stored embeddings as serialized byte arrays. This works but has overhead:
+- Deserialization on every read (bincode/serde overhead)
 - Allocations for temporary buffers
-- No type safety at compile time
-- Difficult to integrate with vector index libraries
+- No type safety - easy to mix up vector dimensions
+- Difficult to integrate with external vector index libraries (HNSW, FAISS, etc.)
+
+**Design decision:**
+
+Use Rust's `fixed_width()` trait (already in Manifold's `Value` trait) to enable zero-copy access for fixed-size arrays. This is already supported in the core - we just need convenient wrappers.
+
+**What this phase adds:**
+
+Not new storage mechanisms - Manifold already handles this. What we're adding is:
+1. **Type-safe wrappers** - `VectorTable<768>` with compile-time dimension checking
+2. **Zero-copy convenience** - `get_zero_copy()` helper avoiding manual unsafe code
+3. **Batch operations** - Optimized bulk insertion leveraging WAL group commit
+4. **Integration points** - Traits for external index libraries to consume table data
 
 ### Design
 
-Create `manifold-vectors` crate providing:
+**1. VectorTable<const DIM: usize>**
 
-**1. VectorTable<const DIM: usize>** - Fixed-dimension dense vectors
+Fixed-dimension dense vectors with compile-time dimension validation:
+
 ```rust
-// Example usage
-let vectors: VectorTable<768> = cf.vector_table("embeddings")?;
+let vectors: VectorTable<768> = VectorTable::new(&cf, "embeddings")?;
+
+// Insert (copies into Manifold's storage)
 vectors.insert("doc_123", &embedding)?;
+
+// Zero-copy access (returns slice into mmap'd storage)
 let vec: &[f32; 768] = vectors.get_zero_copy("doc_123")?;
 ```
 
-**2. SparseVectorTable** - Efficient sparse vector storage
+**Implementation note:** Uses `fixed_width()` to bypass serialization entirely.
+
+**2. SparseVectorTable**
+
+For high-dimensional sparse features (TF-IDF, BM25):
+
 ```rust
-// Store only non-zero entries
-let sparse: SparseVectorTable = cf.sparse_vector_table("features")?;
+let sparse: SparseVectorTable = SparseVectorTable::new(&cf, "features")?;
+
+// Store only non-zero entries (index, value) pairs
 sparse.insert("doc_123", &[(0, 0.5), (42, 0.8), (1000, 0.3)])?;
 ```
 
-**3. MultiVectorTable<const DIM: usize>** - Sequence of vectors (Colbert)
+**Implementation note:** COO (coordinate) format, compressed during serialization.
+
+**3. MultiVectorTable<const DIM: usize>**
+
+For Colbert-style token embeddings (variable-length sequences):
+
 ```rust
-// Store variable-length sequences
-let multi: MultiVectorTable<128> = cf.multi_vector_table("tokens")?;
+let multi: MultiVectorTable<128> = MultiVectorTable::new(&cf, "tokens")?;
+
+// Store sequence of vectors (one per token)
 multi.insert("doc_123", &[vec1, vec2, vec3])?;
 ```
 
-**4. Integration helpers** - Connect to external indexes
+**Implementation note:** Length-prefixed format, each vector zero-copy accessible.
+
+**4. Integration Helpers**
+
+Not building indexes in Manifold - providing integration points:
+
 ```rust
-// Build HNSW index from VectorTable
-let index = HnswIndex::from_table(&vectors, params)?;
+// Trait for index builders to consume table data
+pub trait VectorSource<const DIM: usize> {
+    fn iter(&self) -> impl Iterator<Item = (&str, &[f32; DIM])>;
+}
+
+impl<const DIM: usize> VectorSource<DIM> for VectorTable<DIM> {
+    // Efficient iteration for index building
+}
+
+// User code:
+let hnsw_index = HnswIndex::from_source(&vectors, params)?;
 ```
 
 ### Implementation Tasks
 
 - [ ] **1.1: VectorTable core implementation**
-  - Implement `VectorTable<const DIM: usize>` struct
+  - Implement `VectorTable<const DIM: usize>` struct wrapping Manifold table
   - Use `fixed_width()` trait for zero-copy access
-  - Validate dimension at compile time
-  - Support f32 and f64 element types
+  - Support f32 and f64 element types (generic over Float trait)
   - **Dev Notes:**
 
 - [ ] **1.2: SparseVectorTable implementation**
-  - Implement compressed sparse format (COO or CSR)
-  - Efficient serialization/deserialization
-  - Support common operations (dot product, cosine similarity)
+  - COO format serialization (Vec<(u32, f32)>)
+  - Optional COO → CSR conversion for faster operations
   - **Dev Notes:**
 
 - [ ] **1.3: MultiVectorTable implementation**
-  - Variable-length sequence storage
+  - Length-prefixed storage format
   - Efficient iteration over token vectors
-  - Padding/truncation helpers
   - **Dev Notes:**
 
 - [ ] **1.4: Batch operations**
-  - Batch insert optimized for bulk embedding storage
-  - Parallel processing for batch operations
-  - Progress callbacks for large batches
+  - `insert_batch()` leveraging WAL group commit
+  - Parallel processing for CPU-bound serialization
+  - Progress reporting for large batches
   - **Dev Notes:**
 
-- [ ] **1.5: Index integration**
-  - Trait for external index libraries
-  - HNSW index builder example
-  - Incremental index updates
+- [ ] **1.5: Integration traits**
+  - `VectorSource` trait for index builders
+  - Efficient iteration without allocation
+  - Examples with popular vector index libraries
   - **Dev Notes:**
 
 - [ ] **1.6: Examples and documentation**
   - RAG (Retrieval Augmented Generation) example
-  - Image similarity search example
-  - Benchmark comparison vs raw bytes
+  - Benchmark vs serialized bytes approach
+  - Integration example with external index
   - **Dev Notes:**
 
 ### Success Criteria
 
 - ✅ Zero-copy vector access for fixed-width types
-- ✅ 10x faster than serialized bytes for large vectors
+- ✅ 10x faster than bincode serialization for large vectors
 - ✅ Type-safe API with compile-time dimension checking
 - ✅ Examples demonstrate integration with ML libraries
 - ✅ Comprehensive documentation
@@ -209,109 +262,123 @@ let index = HnswIndex::from_table(&vectors, params)?;
 
 **Status:** Not Started
 
-**Objective:** Efficient edge storage and traversal for graph workloads with support for property graphs and labeled edges.
+**Objective:** Efficient edge storage and traversal for graph workloads with support for bidirectional queries and property graphs.
 
 **Estimated Time:** 10-14 hours
 
-### Context
+### Project Context
 
-Graph databases are essential for:
-- **Social networks** - Friends, follows, likes
-- **Knowledge graphs** - Entity relationships, ontologies
-- **Recommendation systems** - User-item interactions
-- **Network analysis** - Communication patterns, dependencies
+**Problem identified during Phase 5 testing:**
 
-Current approach: Store edges as key-value pairs. This works but requires careful key design:
-- Forward edges need one key format
-- Reverse edges need another (for bidirectional traversal)
-- Finding "all edges from vertex X" requires prefix scans
-- Edge properties need separate storage or embedded serialization
+When testing concurrent writes to different column families, we realized graph edges are a natural fit for Manifold's architecture:
+- Edge insertion is high-throughput (benefits from WAL group commit)
+- Traversal is read-heavy (benefits from lock-free MVCC reads)
+- Edges often need bidirectional access (forward and reverse)
+
+However, manually designing keys for efficient graph queries is error-prone. Users need to understand:
+- Composite key encoding for range scans
+- Maintaining reverse indexes manually
+- Handling edge properties consistently
+
+**Design decision:**
+
+Provide a `GraphTable` wrapper that handles composite keys and reverse indexes automatically, while using Manifold's existing table primitives underneath.
+
+**What this phase adds:**
+
+Not a new graph database - Manifold already supports the primitives. What we're adding:
+1. **Composite key abstraction** - Hide `{source}|{edge_type}|{target}` encoding
+2. **Automatic reverse index** - Maintain forward + reverse tables atomically
+3. **Query helpers** - Outgoing/incoming edge iterators using range scans
+4. **Property handling** - Type-safe edge property storage
 
 ### Design
 
-Create `manifold-graph` crate providing:
+**1. Composite Key Encoding**
 
-**1. Composite Key Format**
 ```rust
-// Edge key: {source}|{edge_type}|{target}
+// Internal encoding: "{source}|{edge_type}|{target}"
 // Enables efficient queries:
 // - All edges from vertex: range scan "{source}|"
-// - All edges of type: range scan "*|{edge_type}|"
-// - Specific edge: exact lookup "{source}|{edge_type}|{target}"
+// - All edges of type: iterate and filter (no index for this)
+// - Specific edge: exact lookup
+
+// User never sees this encoding:
+graph.add_edge("user_123", "follows", "user_456", properties)?;
 ```
 
-**2. GraphTable API**
-```rust
-let graph: GraphTable = cf.graph_table("edges")?;
+**Implementation note:** Use null-byte separators for range scan safety.
 
-// Add edge with properties
+**2. GraphTable API**
+
+```rust
+let graph: GraphTable = GraphTable::new(&cf, "edges")?;
+
+// Add edge (updates forward + reverse tables atomically)
 graph.add_edge("user_123", "follows", "user_456", properties)?;
 
 // Query patterns
 for edge in graph.outgoing_edges("user_123")? {
-    // Iterate outgoing edges
+    // Range scan on forward table
 }
 
 for edge in graph.incoming_edges("user_456")? {
-    // Iterate incoming edges (uses reverse index)
+    // Range scan on reverse table
 }
 
-for edge in graph.edges_of_type("follows")? {
-    // All edges of specific type
-}
+// Specific edge lookup
+let props = graph.get_edge("user_123", "follows", "user_456")?;
 ```
 
 **3. Bidirectional Support**
-- Automatic reverse index maintenance
-- Choose forward-only or bidirectional at creation
-- Atomic updates to both indexes
+
+Two internal tables within the same column family:
+- `edges_forward` - Primary edge storage
+- `edges_reverse` - Reverse index for incoming edge queries
+
+Both updated atomically in same transaction (benefit of column family design).
 
 ### Implementation Tasks
 
 - [ ] **2.1: Composite key encoding**
-  - Implement efficient key serialization
-  - Support different vertex ID types (String, u64, UUID)
-  - Null-safe encoding for range scans
+  - Implement null-byte separated encoding
+  - Support String, u64, UUID vertex ID types
+  - Range-scan safe encoding
   - **Dev Notes:**
 
 - [ ] **2.2: GraphTable core implementation**
-  - Add/remove edge operations
-  - Forward and reverse index management
-  - Atomic bidirectional updates
+  - Wrap two Manifold tables (forward + reverse)
+  - Atomic dual-index updates
+  - Edge property storage (separate table or inline)
   - **Dev Notes:**
 
 - [ ] **2.3: Traversal APIs**
-  - Outgoing/incoming edge iterators
+  - Outgoing/incoming edge iterators (range scans)
   - Edge type filtering
   - Property access
-  - Batch operations
   - **Dev Notes:**
 
-- [ ] **2.4: Graph algorithms integration**
-  - Trait for graph algorithm libraries
-  - BFS/DFS examples
-  - PageRank example
-  - Shortest path helpers
+- [ ] **2.4: Batch operations**
+  - Batch edge insertion (leverage WAL group commit)
+  - Parallel encoding for CPU-bound work
   - **Dev Notes:**
 
-- [ ] **2.5: Property graph support**
-  - Edge properties storage
-  - Vertex properties storage
-  - Typed property access
+- [ ] **2.5: Integration helpers**
+  - Trait for graph algorithm libraries to consume edges
+  - Efficient iteration for BFS/DFS/PageRank
   - **Dev Notes:**
 
 - [ ] **2.6: Examples and documentation**
   - Social network example
   - Knowledge graph example
-  - Recommendation system example
-  - Performance benchmarks
+  - Performance benchmarks vs manual key design
   - **Dev Notes:**
 
 ### Success Criteria
 
 - ✅ Efficient edge traversal (< 1ms for 1000 edges)
 - ✅ Atomic bidirectional edge updates
-- ✅ Flexible property graph support
+- ✅ Property graph support
 - ✅ Integration with graph algorithm libraries
 - ✅ Real-world examples
 
@@ -325,95 +392,103 @@ for edge in graph.edges_of_type("follows")? {
 
 **Estimated Time:** 8-12 hours
 
-### Context
+### Project Context
 
-Time series data is critical for:
-- **Metrics and monitoring** - System performance, application metrics
-- **IoT sensor data** - Temperature, pressure, location tracking
-- **Financial data** - Stock prices, trading volumes
-- **Event logs** - Application events, user activity
+**Problem identified during benchmarking:**
 
-Challenges:
-- **High write volume** - Thousands of data points per second
-- **Range queries** - "Show me last hour/day/week"
-- **Downsampling** - Store raw + aggregated data at multiple granularities
-- **Retention** - Delete old data automatically
+Manifold's high write throughput (451K ops/sec) makes it well-suited for time-series workloads (metrics, IoT sensors, logs). However, time-series has specific patterns:
+- Timestamp-ordered keys for efficient range queries
+- Need for multiple granularities (raw, minute, hour, day)
+- Automatic retention and cleanup of old data
+
+**Design decision:**
+
+Use timestamp-prefixed keys for natural ordering, and leverage Manifold's multiple-tables-per-CF design for different granularities. All within one column family for atomic updates.
+
+**What this phase adds:**
+
+Not time-series specific storage - Manifold's ordered key-value already handles this. What we're adding:
+1. **Timestamp encoding** - Consistent key format for range queries
+2. **Multi-granularity tables** - Raw + downsampled in same CF
+3. **Background downsampling** - Async task reading raw, writing aggregates
+4. **Retention helpers** - Automatic deletion of old data
 
 ### Design
 
-Create `manifold-timeseries` crate providing:
-
 **1. Timestamp-Prefixed Keys**
-```rust
-// Key format: {timestamp}|{series_id}
-// Enables:
-// - Range queries by time
-// - Efficient iteration in time order
-// - Series-level partitioning
-```
 
-**2. TimeSeriesTable API**
 ```rust
-let ts: TimeSeriesTable = cf.timeseries_table("metrics")?;
+// Internal encoding: "{timestamp}|{series_id}"
+// Manifold's lexicographic ordering gives time-order iteration
 
-// Write data point
+// User API:
 ts.write("cpu.usage", timestamp, value)?;
-
-// Range query
-for (timestamp, value) in ts.range("cpu.usage", start, end)? {
-    // Process time range
-}
 ```
 
-**3. Multi-Granularity Storage**
+**Implementation note:** Timestamp encoded as sortable bytes (big-endian u64).
+
+**2. Multi-Granularity Storage**
+
 ```rust
 // Within column family "metrics":
-// - raw table: full resolution
-// - minute table: 1-minute aggregates
-// - hour table: hourly rollups
-// - day table: daily summaries
+// - table "raw": Full resolution data
+// - table "minute": 1-minute aggregates (min, max, avg, count)
+// - table "hour": Hourly rollups
+// - table "day": Daily summaries
 
-let tables = TimeSeriesTables::new(&cf, "cpu.usage")?;
-tables.write_raw(timestamp, value)?;
-// Automatic downsampling to minute/hour/day tables
+let tables = TimeSeriesTables::new(&cf)?;
+tables.write_raw("cpu.usage", timestamp, value)?;
+
+// Background task (or manual):
+tables.downsample_to_minute()?;
+tables.downsample_to_hour()?;
+```
+
+**3. Retention Policies**
+
+```rust
+// Delete data older than threshold
+tables.apply_retention(
+    granularity = "raw",
+    keep_duration = Duration::from_days(7)
+)?;
 ```
 
 ### Implementation Tasks
 
 - [ ] **3.1: Key encoding**
-  - Timestamp-prefixed key format
-  - Support different timestamp resolutions (ms, us, ns)
+  - Sortable timestamp encoding (big-endian u64)
   - Series ID encoding
+  - Composite key helpers
   - **Dev Notes:**
 
 - [ ] **3.2: TimeSeriesTable implementation**
   - Write/read operations
-  - Range queries
+  - Range queries by time
   - Efficient iteration
   - **Dev Notes:**
 
-- [ ] **3.3: Downsampling system**
-  - Automatic aggregation (min, max, avg, sum, count)
-  - Background downsampling task
-  - Configurable granularities
+- [ ] **3.3: Multi-granularity tables**
+  - Multiple tables within same CF
+  - Downsampling logic (min, max, avg, sum, count)
+  - Atomic writes across granularities
   - **Dev Notes:**
 
-- [ ] **3.4: Retention policies**
-  - Automatic deletion of old data
+- [ ] **3.4: Background tasks**
+  - Optional background downsampling (separate thread)
+  - Manual downsampling API
+  - **Dev Notes:**
+
+- [ ] **3.5: Retention policies**
+  - Automatic deletion by age
   - Per-granularity retention
   - Background cleanup task
-  - **Dev Notes:**
-
-- [ ] **3.5: Aggregation queries**
-  - Query across multiple granularities
-  - Automatic granularity selection
-  - Gap filling and interpolation
   - **Dev Notes:**
 
 - [ ] **3.6: Examples and documentation**
   - Metrics collection example
   - IoT sensor data example
-  - Performance benchmarks
+  - Benchmarks (write throughput, query performance)
   - **Dev Notes:**
 
 ### Success Criteria
@@ -426,250 +501,51 @@ tables.write_raw(timestamp, value)?;
 
 ---
 
-## Phase 4: Hyperbolic Space Optimization
-
-**Status:** Not Started
-
-**Objective:** Specialized storage and indexing for hyperbolic embeddings used in hierarchical representation learning.
-
-**Estimated Time:** 16-20 hours (most complex)
-
-### Context
-
-Hyperbolic embeddings are increasingly important in ML:
-- **Hierarchical data** - Taxonomies, org charts, file systems
-- **Knowledge graphs** - Ontologies with parent-child relationships
-- **Social networks** - Community hierarchies
-- **Natural language** - Semantic hierarchies, entailment
-
-Why hyperbolic space?
-- **Exponential volume growth** - Perfect for tree-like structures
-- **Low distortion** - Embed trees with minimal distance distortion
-- **Better than Euclidean** - 2D hyperbolic can embed arbitrary trees
-
-Challenges:
-- **Non-standard distance functions** - Hyperbolic distance, not Euclidean
-- **Numerical stability** - Careful handling of Poincaré disk boundaries
-- **Spatial indexing** - Traditional indexes (k-d trees, HNSW) don't work
-- **Multiple models** - Poincaré disk, hyperboloid, half-space
-
-For Hyperspatial specifically:
-- 17-dimensional hyperbolic arrays (3 positions: graph, property, vector)
-- Need efficient storage (17 × f64 = 136 bytes per point)
-- Need hyperbolic distance-aware indexing
-- Need integration with hyperbolic ML libraries
-
-### Design
-
-Create `manifold-hyperbolic` crate providing:
-
-**1. HyperbolicTable<const DIM: usize>**
-```rust
-let hyper: HyperbolicTable<17> = cf.hyperbolic_table("positions")?;
-
-// Store hyperbolic coordinates
-hyper.insert("entity_123", &coords)?;
-
-// Zero-copy access
-let coords: &[f64; 17] = hyper.get_zero_copy("entity_123")?;
-
-// Distance queries (hyperbolic distance)
-let neighbors = hyper.nearest("entity_123", k=10)?;
-```
-
-**2. Multiple Model Support**
-```rust
-enum HyperbolicModel {
-    PoincareDisc,
-    Hyperboloid,
-    HalfSpace,
-}
-
-// Convert between models
-let hyperboloid_coords = poincare_to_hyperboloid(&coords);
-```
-
-**3. Spatial Index**
-```rust
-// Hyperbolic ball tree or custom index structure
-let index: HyperbolicIndex<17> = HyperbolicIndex::build(&table)?;
-
-// Range queries in hyperbolic space
-let points = index.range_query(center, radius)?;
-
-// k-NN queries
-let neighbors = index.knn(query, k=10)?;
-```
-
-### Implementation Tasks
-
-- [ ] **4.1: HyperbolicTable implementation**
-  - Fixed-width storage for coordinates
-  - Zero-copy access
-  - Support f32 and f64
-  - **Dev Notes:**
-
-- [ ] **4.2: Distance functions**
-  - Poincaré disk distance
-  - Hyperboloid distance
-  - Half-space distance
-  - Numerical stability handling
-  - **Dev Notes:**
-
-- [ ] **4.3: Model conversions**
-  - Poincaré ↔ Hyperboloid
-  - Poincaré ↔ Half-space
-  - Stereographic projections
-  - **Dev Notes:**
-
-- [ ] **4.4: Spatial indexing**
-  - Research hyperbolic spatial index structures
-  - Implement hyperbolic ball tree or equivalent
-  - Range queries
-  - k-NN queries
-  - **Dev Notes:**
-
-- [ ] **4.5: Integration with ML libraries**
-  - Trait for hyperbolic embedding libraries
-  - Geoopt integration (PyTorch)
-  - Hyperbolic gradient descent support
-  - **Dev Notes:**
-
-- [ ] **4.6: Examples and documentation**
-  - Hierarchical embedding example
-  - Tree embedding example
-  - Visualization helpers
-  - Performance benchmarks
-  - **Dev Notes:**
-
-### Success Criteria
-
-- ✅ Efficient storage for high-dimensional hyperbolic coordinates
-- ✅ Correct hyperbolic distance functions
-- ✅ Spatial index for range/k-NN queries
-- ✅ Integration with hyperbolic ML libraries
-- ✅ Comprehensive documentation and examples
-
----
-
-## Integration: HyperspatialManifold
-
-**Objective:** Orchestration layer combining all domain optimizations for the Hyperspatial use case.
-
-### Design
-
-`HyperspatialManifold` manages multiple column families with specialized tables:
-
-```rust
-pub struct HyperspatialManifold {
-    db: ColumnFamilyDatabase,
-    // Each entity type gets a column family
-}
-
-impl HyperspatialManifold {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let db = ColumnFamilyDatabase::open(path)?;
-        Ok(Self { db })
-    }
-    
-    pub fn create_collection(&self, name: &str) -> Result<Collection> {
-        // Create column family with all specialized tables
-        let cf = self.db.column_family_or_create(name)?;
-        
-        Collection::new(cf)
-    }
-}
-
-pub struct Collection {
-    // Specialized tables within one column family
-    properties: Table,
-    edges_forward: GraphTable,
-    edges_reverse: GraphTable,
-    vectors_dense: VectorTable<768>,
-    vectors_sparse: SparseVectorTable,
-    vectors_multi: MultiVectorTable<128>,
-    hyperbolic_graph: HyperbolicTable<17>,
-    hyperbolic_property: HyperbolicTable<17>,
-    hyperbolic_vector: HyperbolicTable<17>,
-    metadata: TimeSeriesTable,
-}
-```
-
-### Example Usage
-
-```rust
-// Open database
-let manifold = HyperspatialManifold::new("my_data.db")?;
-
-// Create collection for news articles
-let news = manifold.create_collection("news_articles")?;
-
-// Atomic write across multiple tables
-let txn = news.begin_write()?;
-txn.properties.insert("article_123", &article)?;
-txn.vectors_dense.insert("article_123", &embedding)?;
-txn.edges_forward.add_edge("article_123", "cites", "article_456", None)?;
-txn.hyperbolic_graph.insert("article_123", &graph_position)?;
-txn.commit()?;
-
-// Query
-let similar = news.vectors_dense.nearest("article_123", k=10)?;
-let related = news.edges_forward.outgoing_edges("article_123")?;
-```
-
----
-
 ## Implementation Strategy
 
 ### Sequencing
 
-1. **Start with VectorTable** (Phase 1)
-   - Most common use case
-   - Establishes patterns for other domains
-   - Immediate value for ML workloads
+**Phase 1 (Vectors) first:**
+- Most common use case in modern applications
+- Establishes patterns for other domain layers
+- Simpler than graphs or time-series (no multi-table coordination)
+- Immediate value for ML/AI workloads
 
-2. **Add GraphTable** (Phase 2)
-   - Complements vectors (RAG + knowledge graphs)
-   - Patterns apply to other composite key scenarios
+**Phase 2 (Graph) second:**
+- Complements vectors (RAG systems often combine vector search + knowledge graphs)
+- Introduces multi-table atomic updates pattern
+- Composite key encoding applies to other scenarios
 
-3. **Add TimeSeriesTable** (Phase 3)
-   - Simpler than hyperbolic space
-   - Useful for metrics and monitoring
-
-4. **Add HyperbolicTable** (Phase 4)
-   - Most complex
-   - Benefits from lessons learned in earlier phases
-   - Specific to Hyperspatial but demonstrates extensibility
+**Phase 3 (Time Series) third:**
+- Builds on multi-table patterns from Phase 2
+- Adds background task patterns (downsampling, retention)
+- Completes the trio of common domain workloads
 
 ### Development Process
 
 For each phase:
-1. **Design** - Write detailed design doc with examples
+1. **Design doc** - Detailed design with examples, review before implementation
 2. **Prototype** - Build core functionality in separate crate
-3. **Test** - Comprehensive tests including performance benchmarks
-4. **Document** - API docs, examples, integration guide
-5. **Integrate** - Add to HyperspatialManifold orchestration layer
+3. **Test** - Unit tests + integration tests + benchmarks
+4. **Document** - API docs, usage examples, performance characteristics
+5. **Publish** - Release as separate crate with clear versioning
 
 ### Dependencies
 
-- **Phase 1 (Vectors)** - No dependencies, can start immediately
-- **Phase 2 (Graph)** - Independent, can run in parallel with Phase 1
-- **Phase 3 (Time Series)** - Independent, can run in parallel
-- **Phase 4 (Hyperbolic)** - Builds on VectorTable patterns from Phase 1
-- **Integration** - Requires Phases 1-4 complete
+- **Phase 1 (Vectors)** - No dependencies, can start immediately after finalization plan complete
+- **Phase 2 (Graph)** - Independent, could run parallel with Phase 1
+- **Phase 3 (Time Series)** - Benefits from Phase 2 patterns, but not strictly dependent
 
 ### Timeline
 
-Assuming sequential development:
-- **Phase 1:** 2-3 weeks
-- **Phase 2:** 2 weeks
-- **Phase 3:** 1-2 weeks
-- **Phase 4:** 3-4 weeks
-- **Integration:** 1 week
+**Sequential development:**
+- Phase 1: 2 weeks
+- Phase 2: 1.5 weeks
+- Phase 3: 1-1.5 weeks
+- **Total: 4.5-5 weeks**
 
-**Total: 9-12 weeks for complete domain optimization suite**
-
-Parallel development could reduce this to 6-8 weeks if multiple developers work on different phases simultaneously.
+**Parallel development (if multiple developers):**
+- All phases: 2-3 weeks
 
 ---
 
@@ -687,11 +563,10 @@ Each phase is considered complete when:
 ### Overall Success
 
 Domain optimization suite is complete when:
-- ✅ All four phases complete and published
-- ✅ HyperspatialManifold integration working
-- ✅ Performance validated in production-like workloads
+- ✅ All three phases complete and published
+- ✅ Performance validated in realistic workloads
 - ✅ Documentation enables users to adopt domain layers easily
-- ✅ Community can contribute additional domain layers following established patterns
+- ✅ Patterns established for community to build additional domain layers
 
 ---
 
@@ -701,17 +576,17 @@ Domain optimization suite is complete when:
 
 - **manifold-core:** Semantic versioning (currently tracking completion plan)
 - **Domain crates:** Independent semantic versioning
-- **Breaking changes:** Domain layers can evolve without affecting core
 - **Compatibility:** Domain layers specify minimum manifold-core version
+
+Each domain crate can evolve independently without affecting core or other domain layers.
 
 ### Future Domain Layers
 
-The pattern established here enables future domain-specific optimizations:
+The patterns established here enable future community contributions:
 - **manifold-geospatial** - Geographic data and spatial indexes
-- **manifold-document** - Full-text search integration
-- **manifold-ml** - Direct integration with ML frameworks
-- **manifold-crypto** - Blockchain and cryptographic data
-- **Community contributions** - Others can build domain layers
+- **manifold-document** - Document storage with metadata
+- **manifold-ml** - Direct integration with ML frameworks (PyTorch, TensorFlow)
+- Others as community needs emerge
 
 ### Performance Monitoring
 
@@ -719,14 +594,15 @@ Each domain layer should:
 - Include benchmark suite
 - Track performance across versions
 - Document performance characteristics clearly
-- Provide tuning guidance for different workloads
+- Provide tuning guidance
 
 ---
 
 ## Notes
 
-- This plan is versioned (v0.1.1) to track evolution as we learn from implementation
+- This plan is versioned (v0.1.1) to track evolution
 - Update version when making substantial changes to approach or scope
 - Each phase should update this document with learnings and design decisions
 - Domain layers remain optional - users can use Manifold core directly if preferred
 - Focus on enabling patterns, not prescribing solutions
+- Hyperspatial-specific optimizations (hyperbolic embeddings, spatial indexing) remain in hyperspatial repository, not in these general-purpose domain layers
