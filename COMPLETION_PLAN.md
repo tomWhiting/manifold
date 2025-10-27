@@ -458,7 +458,7 @@ This section documents important design decisions made during implementation, in
 
 ### Phase 6: WASM Backend Implementation
 
-**Status:** In Progress 🚀
+**Status:** In Progress (Iteration API needed)
 
 **Objective:** Enable ColumnFamilyDatabase to run in browser environments using OPFS (Origin Private File System) for persistence, targeting Web Workers for concurrent multi-threaded access.
 
@@ -513,20 +513,29 @@ This section documents important design decisions made during implementation, in
   - Implement builder pattern for WASM context
   - **Dev Notes:** Implemented `open_with_backend()` method that accepts Arc<dyn StorageBackend> and pool_size. Added conditional compilation throughout database.rs, state.rs, and builder.rs to handle WASM vs native differences. WASM path uses simpler initialization without file pooling. ColumnFamily struct has WASM-specific fields. Successfully compiles for wasm32-unknown-unknown target.
 
-- [x] Create WASM-specific example ✅
+- [x] Create WASM-specific example (Partial - iteration incomplete) ⚠️
   - Web page with Web Worker demonstrating ColumnFamilyDatabase in browser
   - Show multiple column families with concurrent access
   - Demonstrate persistence across page reloads
   - Note: WAL not yet implemented for WASM (future work)
   - Located in `examples/wasm/` with index.html, worker.js, README.md
-  - **Dev Notes:** Created comprehensive example with beautiful UI, Web Worker integration, and detailed README. Includes column family creation, data write/read, persistence testing, and multi-CF listing. README covers build instructions, architecture diagram, browser compatibility, troubleshooting, and performance notes. Example ready for browser testing.
+  - **Dev Notes:** Created example with UI, Web Worker integration, and README. Column family creation, data write/read working and tested. Persistence verified in Safari. CRITICAL ISSUE: List All Data currently returns placeholder empty arrays instead of actual data - iteration API not yet implemented. This must be fixed before Phase 6 can be marked complete.
 
-- [x] Test WASM build ✅
+- [ ] Implement proper table iteration API for WASM
+  - Design decision: WasmIterator that owns ReadTransaction
+  - Create WasmIterator struct with next() method
+  - Returns Option<(String, String)> for each key-value pair
+  - Handles lifetimes by owning the transaction
+  - Expose via WasmColumnFamily.iter() or similar
+  - Update worker.js listAll case to use real iteration
+  - **Dev Notes:**
+
+- [x] Test WASM build (Partial - iteration untested) ⚠️
   - Verify compilation with `cargo build --target wasm32-unknown-unknown`
   - Test in actual browser environment (Chrome, Firefox, Safari)
   - Verify OPFS persistence and performance
   - Test Web Worker concurrent access patterns
-  - **Dev Notes:** Successfully tested in Safari 16+. Fixed multiple issues: ES6 module imports in worker, wasm-bindgen constructor syntax, String vs &str types for WASM boundary, SystemTime/Instant timing code incompatible with WASM (conditionally compiled out). Created WasmDatabase wrapper with simplified atomic read/write API. OPFS persistence confirmed working across page reloads. Column family creation, data write/read all functioning correctly.
+  - **Dev Notes:** Successfully tested in Safari 16+. Fixed multiple issues: ES6 module imports in worker, wasm-bindgen constructor syntax, String vs &str types for WASM boundary, SystemTime/Instant timing code incompatible with WASM (conditionally compiled out). Created WasmDatabase wrapper with atomic read/write API. OPFS persistence confirmed working across page reloads. Column family creation, data write/read functioning correctly. INCOMPLETE: Iteration/listing not yet implemented - returns placeholder empty arrays.
 
 - [x] Update documentation ✅
   - Document Web Worker requirement clearly
@@ -549,41 +558,50 @@ This section documents important design decisions made during implementation, in
 
 **Dependencies:** Phases 1-5 complete (especially Phase 5.6 WAL and Phase 5.7 API simplification)
 
-**Estimated Time:** 8-10 hours (10 hours completed) ✅
+**Estimated Time:** 8-10 hours (10 hours completed, +2-3 hours needed for iteration)
 - Core WasmStorageBackend implementation: 2 hours ✅
 - Integration & conditional compilation: 3 hours ✅ (took longer than estimated)
 - Example web app: 2 hours ✅
 - Browser compatibility testing & iteration: 3 hours ✅
+- Table iteration API implementation: 2-3 hours (In Progress)
 - Unit tests with wasm-bindgen-test: Deferred (not critical for initial release)
 
 **Success Criteria:**
 - ✅ ColumnFamilyDatabase compiles and runs in wasm32-unknown-unknown target
 - ✅ OPFS persistence works across page reloads in Web Worker context
 - ✅ Multiple column families accessible from Web Workers
-- ✅ Example demonstrates practical usage pattern
+- ⚠️ Example demonstrates practical usage pattern (read/write work, iteration missing)
 - ✅ Clear documentation of requirements and limitations
 
-**Phase Complete! ✅**
+**Phase Status: 90% Complete - Iteration API Required**
 
-**Key Accomplishments:**
+**Completed:**
 - Full WASM support with OPFS storage backend
-- Simplified JavaScript API via WasmDatabase wrapper
+- WasmDatabase wrapper with atomic read/write operations
 - Working example with persistence verified in Safari
 - Comprehensive documentation and troubleshooting guide
 - Conditional compilation to handle WASM platform differences
+- All basic CRUD operations working
 
-**Known Limitations Documented:**
-- WAL not yet implemented for WASM (future work)
+**Remaining Work:**
+- Implement WasmIterator for proper table iteration
+- Remove placeholder empty array returns in listAll
+- Test iteration functionality in browser
+- Verify iteration works with multiple entries
+
+**Current Limitations:**
+- WAL not yet implemented for WASM (documented for future work)
+- Table iteration not yet implemented (CRITICAL - blocking Phase 6 completion)
 - Requires Web Worker context for OPFS synchronous access
 - SystemTime/Instant timing code disabled in WASM builds
-- List/iteration API simplified (atomic operations only)
 
-**Next Steps (Future Work):**
-1. Implement WAL for WASM to enable group commit optimization
-2. Add comprehensive wasm-bindgen-test unit tests
-3. Test in additional browsers (Chrome, Firefox, Edge)
-4. Add table iteration API to WASM wrapper
-5. Performance benchmarking vs native and vs IndexedDB
+**Implementation Plan for Iteration:**
+Approach: WasmIterator struct that owns ReadTransaction
+- WasmIterator holds ReadTransaction and table iterator
+- Expose next() method returning Option<JsValue> with [key, value] array
+- Properly manages lifetimes by owning the transaction
+- No shortcuts or placeholders - true streaming iteration
+- Estimated time: 2-3 hours
 
 ---
 
