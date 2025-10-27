@@ -1,7 +1,9 @@
 use std::io;
 use std::sync::{Arc, RwLock};
 
-use crate::{Database, DatabaseError, StorageBackend};
+#[cfg(target_arch = "wasm32")]
+use crate::StorageBackend;
+use crate::{Database, DatabaseError};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::file_handle_pool::FileHandlePool;

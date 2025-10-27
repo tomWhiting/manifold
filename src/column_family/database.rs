@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-#[cfg(target_arch = "wasm32")]
-use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -10,6 +8,7 @@ use std::sync::{Arc, RwLock};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::backends::FileBackend;
 use crate::db::ReadableDatabase;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::tree_store::BtreeHeader;
 use crate::{
     Database, DatabaseError, ReadTransaction, StorageBackend, StorageError, TransactionError,
@@ -22,8 +21,11 @@ use super::builder::ColumnFamilyDatabaseBuilder;
 use super::file_handle_pool::FileHandlePool;
 use super::header::{ColumnFamilyMetadata, FreeSegment, MasterHeader, PAGE_SIZE, Segment};
 use super::state::ColumnFamilyState;
+#[cfg(not(target_arch = "wasm32"))]
 use super::wal::checkpoint::CheckpointManager;
+#[cfg(not(target_arch = "wasm32"))]
 use super::wal::config::CheckpointConfig;
+#[cfg(not(target_arch = "wasm32"))]
 use super::wal::journal::WALJournal;
 
 /// Default size allocated to a new column family (1 GB).
@@ -164,8 +166,14 @@ pub struct ColumnFamilyDatabase {
     file_name: String,
     column_families: Arc<RwLock<HashMap<String, Arc<ColumnFamilyState>>>>,
     header: Arc<RwLock<MasterHeader>>,
+    #[cfg(not(target_arch = "wasm32"))]
     wal_journal: Option<Arc<WALJournal>>,
-    checkpoint_manager: Option<Arc<crate::column_family::wal::checkpoint::CheckpointManager>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    checkpoint_manager: Option<Arc<CheckpointManager>>,
+    #[cfg(target_arch = "wasm32")]
+    wal_journal: Option<Arc<()>>,
+    #[cfg(target_arch = "wasm32")]
+    checkpoint_manager: Option<Arc<()>>,
 }
 
 impl ColumnFamilyDatabase {
@@ -896,8 +904,14 @@ pub struct ColumnFamily {
     #[cfg(target_arch = "wasm32")]
     backend: Arc<dyn StorageBackend>,
     header: Arc<RwLock<MasterHeader>>,
+    #[cfg(not(target_arch = "wasm32"))]
     wal_journal: Option<Arc<WALJournal>>,
+    #[cfg(not(target_arch = "wasm32"))]
     checkpoint_manager: Option<Arc<CheckpointManager>>,
+    #[cfg(target_arch = "wasm32")]
+    wal_journal: Option<Arc<()>>,
+    #[cfg(target_arch = "wasm32")]
+    checkpoint_manager: Option<Arc<()>>,
 }
 
 impl ColumnFamily {

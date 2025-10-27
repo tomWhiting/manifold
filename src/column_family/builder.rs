@@ -1,7 +1,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::database::ColumnFamilyDatabase;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::DatabaseError;
 
 /// Default file handle pool size.
@@ -9,6 +11,7 @@ use crate::DatabaseError;
 /// Set to 64 to enable WAL (Write-Ahead Log) by default for optimal performance.
 /// WAL provides 82% throughput improvement and group commit batching.
 /// Set `pool_size` to 0 to explicitly disable WAL.
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_POOL_SIZE: usize = 64;
 
 /// Builder for configuring and opening a column family database.
