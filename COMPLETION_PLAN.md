@@ -458,58 +458,100 @@ This section documents important design decisions made during implementation, in
 
 ### Phase 6: WASM Backend Implementation
 
-**Status:** Not Started
+**Status:** In Progress 🚀
 
-**Objective:** Enable column family database to run in browser environments using IndexedDB or OPFS for persistence.
+**Objective:** Enable ColumnFamilyDatabase to run in browser environments using OPFS (Origin Private File System) for persistence, targeting Web Workers for concurrent multi-threaded access.
+
+**Design Decisions:**
+
+- **OPFS over IndexedDB**: OPFS synchronous access provides file-like API (read/write/seek) that naturally maps to StorageBackend trait, avoiding chunking complexity and offering better performance
+- **Web Worker requirement**: OPFS synchronous access only available in Web Workers (not main thread), which aligns with multi-threaded column family architecture
+- **Synchronous API maintained**: Keep existing StorageBackend trait synchronous using blocking wrappers; no need to async-ify entire codebase
+- **ColumnFamily-only focus**: ColumnFamilyDatabase with WAL is faster even for single-threaded use; no need to support standalone Database initially
+- **No file locking**: Browsers are single-origin, single-process; OPFS handles access control automatically
+- **Module structure**: Single `src/wasm.rs` file (~200-300 lines); refactor to `src/wasm/` folder if grows beyond ~400 lines
 
 **Key Components:**
 
-- [ ] Create `WasmStorageBackend` in `src/backends/wasm.rs`
+- [ ] Create `WasmStorageBackend` in `src/wasm.rs`
   - Conditional compilation with `#[cfg(target_arch = "wasm32")]`
-  - Use wasm-bindgen for JavaScript interop
-  - Choose between IndexedDB or OPFS based on browser support
+  - Use wasm-bindgen for JavaScript interop with OPFS
+  - Hold FileSystemSyncAccessHandle from OPFS API
   - **Dev Notes:**
 
 - [ ] Implement StorageBackend trait for WasmStorageBackend
-  - Map byte-range operations to IndexedDB transactions or OPFS file operations
-  - Handle async browser APIs with synchronous wrapper or async trait variant
-  - No file locking needed (browsers are single-process)
+  - `len()`: Query OPFS file size
+  - `read()`: Direct OPFS read with offset and buffer
+  - `write()`: Direct OPFS write with offset and buffer
+  - `set_len()`: OPFS truncate/extend operations
+  - `sync_data()`: OPFS flush method
+  - `close()`: Release OPFS file handle
+  - No file locking implementation needed
   - **Dev Notes:**
 
-- [ ] Handle async API impedance mismatch
-  - Investigate wasm-bindgen-futures for sync wrappers
-  - Consider alternative: async StorageBackend trait variant for WASM
-  - Document decision and trade-offs
+- [ ] Add WASM-specific dependencies using cargo add
+  - `cargo add --target wasm32-unknown-unknown wasm-bindgen`
+  - `cargo add --target wasm32-unknown-unknown web-sys --features FileSystemFileHandle,FileSystemSyncAccessHandle`
+  - `cargo add --target wasm32-unknown-unknown wasm-bindgen-futures`
+  - Use latest versions of all dependencies
+  - **Dev Notes:**
+
+- [ ] Implement browser capability detection
+  - Runtime check for OPFS synchronous access support
+  - Clear error messages if requirements not met
+  - Graceful handling of unsupported browsers
+  - **Dev Notes:**
+
+- [ ] Handle error mapping
+  - Convert JavaScript exceptions to io::Error
+  - Provide descriptive error messages for browser-specific failures
   - **Dev Notes:**
 
 - [ ] Create WASM-specific example
-  - Simple web page demonstrating column family database in browser
-  - Show persistence across page reloads
-  - Located in `examples/wasm/`
+  - Web page with Web Worker demonstrating ColumnFamilyDatabase in browser
+  - Show multiple column families with concurrent access
+  - Demonstrate persistence across page reloads
+  - Show WAL group commit working in browser context
+  - Located in `examples/wasm/` with index.html, worker.js, README.md
   - **Dev Notes:**
 
 - [ ] Test WASM build
-  - Verify compilation with wasm32-unknown-unknown target
-  - Test in actual browser environment
-  - Verify IndexedDB/OPFS persistence
+  - Verify compilation with `cargo build --target wasm32-unknown-unknown`
+  - Test in actual browser environment (Chrome, Firefox, Safari)
+  - Verify OPFS persistence and performance
+  - Test Web Worker concurrent access patterns
   - **Dev Notes:**
 
-- [ ] Update build configuration
-  - Add WASM-specific dependencies to Cargo.toml with target conditions
-  - Document WASM build instructions
+- [ ] Update documentation
+  - Document Web Worker requirement clearly
+  - Document browser compatibility (modern browsers with OPFS support)
+  - Provide WASM build instructions
+  - Document performance characteristics vs native
   - **Dev Notes:**
 
 **Files Modified:**
-- Create: `src/backends/wasm.rs`
-- Modify: `src/backends.rs` (conditional export)
-- Create: `examples/wasm/index.html` and supporting files
-- Modify: `Cargo.toml` (WASM dependencies)
+- Create: `src/wasm.rs`
+- Modify: `src/lib.rs` (conditional module declaration and export)
+- Create: `examples/wasm/index.html`
+- Create: `examples/wasm/worker.js`
+- Create: `examples/wasm/README.md`
+- Modify: `Cargo.toml` (WASM target-specific dependencies)
 
-**Dependencies:** Phase 4 complete (Phase 5 optional)
+**Dependencies:** Phases 1-5 complete (especially Phase 5.6 WAL and Phase 5.7 API simplification)
 
-**Estimated Time:** 4-6 hours
+**Estimated Time:** 8-10 hours
+- Core WasmStorageBackend implementation: 2 hours
+- Integration & conditional compilation: 1 hour
+- Unit tests with wasm-bindgen-test: 1 hour
+- Example web app: 2 hours
+- Browser compatibility testing & iteration: 2-4 hours
 
-**Note:** This phase can be deferred if browser support is not immediately required.
+**Success Criteria:**
+- ColumnFamilyDatabase compiles and runs in wasm32-unknown-unknown target
+- OPFS persistence works across page reloads in Web Worker context
+- Multiple column families accessible from Web Workers
+- Example demonstrates practical usage pattern
+- Clear documentation of requirements and limitations
 
 ---
 
@@ -892,18 +934,6 @@ WAL system is now **fully functional and production-ready**:
 **Test Results:** All 274 tests passing across 13 test suites
 
 ### 🚧 REMAINING WORK
-
-**Phase 5.7: API Simplification & Default Configuration** (In Progress) 🚀
-- Make WAL and column families the seamless default experience
-- Set sensible defaults (pool_size=64, auto-create column families)
-- Simplify API for common use cases
-- Ensure users don't need to understand implementation details
-
-**Phase 5.6e: Testing & Benchmarking** (Complete) ✅
-- Performance benchmarks showing 82-158% improvement with WAL
-- WAL provides 451K ops/sec at 8 threads vs 248K without
-- ~4.7x faster than vanilla redb (96K ops/sec)
-- All tests passing (98/98)
 
 **Phase 5.6f: Documentation**
 - Update WAL configuration examples
