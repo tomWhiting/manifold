@@ -1,0 +1,423 @@
+//! WASM storage backend using OPFS (Origin Private File System).
+//!
+//! This module provides a [`WasmStorageBackend`] implementation that uses the browser's
+//! Origin Private File System for persistent storage in WebAssembly environments.
+//!
+//! # Requirements
+//!
+//! - **Web Worker context**: OPFS synchronous access is only available in Web Workers,
+//!   not on the main thread
+//! - **Modern browser**: Requires browsers with OPFS support (Chrome 102+, Edge 102+,
+//!   Safari 15.2+, Firefox 111+)
+//! - **SharedArrayBuffer**: Required for synchronous file access
+//!
+//! # Example
+//!
+//! ```ignore
+//! use manifold::wasm::WasmStorageBackend;
+//! use manifold::column_family::ColumnFamilyDatabase;
+//!
+//! // This code must run in a Web Worker
+//! let backend = WasmStorageBackend::new("my-database.db").await?;
+//! let db = ColumnFamilyDatabase::builder()
+//!     .create_with_backend(Box::new(backend))?;
+//! ```
+
+use crate::StorageBackend;
+use std::io;
+use std::sync::{Arc, Mutex};
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
+use web_sys::{FileSystemFileHandle, FileSystemSyncAccessHandle};
+
+/// A storage backend that uses the browser's Origin Private File System (OPFS).
+///
+/// This backend implements the [`StorageBackend`] trait using OPFS synchronous access handles,
+/// which provide file-like read/write operations with byte-level addressing.
+///
+/// # Thread Safety
+///
+/// The backend uses internal locking to ensure thread-safe access to the OPFS file handle,
+/// though in practice WASM is single-threaded within a Web Worker context.
+pub struct WasmStorageBackend {
+    /// The OPFS synchronous access handle for file operations
+    handle: Arc<Mutex<FileSystemSyncAccessHandle>>,
+    /// The file name for debugging and error messages
+    file_name: String,
+}
+
+// Manual Debug implementation to work around FileSystemSyncAccessHandle not being Debug
+impl std::fmt::Debug for WasmStorageBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmStorageBackend")
+            .field("file_name", &self.file_name)
+            .finish_non_exhaustive()
+    }
+}
+
+// SAFETY: FileSystemSyncAccessHandle is only accessible from a single Web Worker
+// context in WASM, which is effectively single-threaded. The Mutex ensures
+// exclusive access. We manually implement Send + Sync since the web-sys types
+// don't implement them (they're opaque JavaScript objects).
+unsafe impl Send for WasmStorageBackend {}
+unsafe impl Sync for WasmStorageBackend {}
+
+impl WasmStorageBackend {
+    /// Creates a new WASM storage backend for the given file.
+    ///
+    /// This function must be called from a Web Worker context where OPFS synchronous
+    /// access is available.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_name` - Name of the file to create/open in OPFS
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Not running in a Web Worker context
+    /// - OPFS is not supported by the browser
+    /// - File cannot be created or opened
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let backend = WasmStorageBackend::new("database.db").await?;
+    /// ```
+    pub async fn new(file_name: &str) -> Result<Self, io::Error> {
+        // Get the OPFS root directory
+        let root = Self::get_opfs_root().await?;
+
+        // Get or create the file handle
+        let file_handle = Self::get_file_handle(&root, file_name).await?;
+
+        // Create a synchronous access handle (only available in Web Workers)
+        let sync_handle = Self::create_sync_handle(&file_handle).await?;
+
+        Ok(Self {
+            handle: Arc::new(Mutex::new(sync_handle)),
+            file_name: file_name.to_string(),
+        })
+    }
+
+    /// Gets the OPFS root directory.
+    async fn get_opfs_root() -> Result<web_sys::FileSystemDirectoryHandle, io::Error> {
+        // Access the global scope (must be WorkerGlobalScope in Web Worker)
+        let global = js_sys::global();
+
+        // Try to get the storage manager
+        let navigator =
+            js_sys::Reflect::get(&global, &JsValue::from_str("navigator")).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("Failed to access navigator: {:?}", e),
+                )
+            })?;
+
+        let storage =
+            js_sys::Reflect::get(&navigator, &JsValue::from_str("storage")).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("Storage API not available: {:?}", e),
+                )
+            })?;
+
+        let get_directory = js_sys::Reflect::get(&storage, &JsValue::from_str("getDirectory"))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("OPFS not supported: {:?}", e),
+                )
+            })?;
+
+        let get_directory_fn = get_directory.dyn_into::<js_sys::Function>().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("getDirectory is not a function: {:?}", e),
+            )
+        })?;
+
+        // Call getDirectory() to get the root
+        let promise = get_directory_fn
+            .call0(&storage)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to call getDirectory: {:?}", e),
+                )
+            })?
+            .dyn_into::<js_sys::Promise>()
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("getDirectory did not return a Promise: {:?}", e),
+                )
+            })?;
+
+        let result = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to get OPFS root: {:?}", e),
+                )
+            })?;
+
+        result
+            .dyn_into::<web_sys::FileSystemDirectoryHandle>()
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Result is not a FileSystemDirectoryHandle: {:?}", e),
+                )
+            })
+    }
+
+    /// Gets or creates a file handle in the OPFS directory.
+    async fn get_file_handle(
+        root: &web_sys::FileSystemDirectoryHandle,
+        file_name: &str,
+    ) -> Result<FileSystemFileHandle, io::Error> {
+        let options = web_sys::FileSystemGetFileOptions::new();
+        options.set_create(true);
+
+        let promise = root.get_file_handle_with_options(file_name, &options);
+
+        let result = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to create/open file '{}': {:?}", file_name, e),
+                )
+            })?;
+
+        result.dyn_into::<FileSystemFileHandle>().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Result is not a FileSystemFileHandle: {:?}", e),
+            )
+        })
+    }
+
+    /// Creates a synchronous access handle from a file handle.
+    async fn create_sync_handle(
+        file_handle: &FileSystemFileHandle,
+    ) -> Result<FileSystemSyncAccessHandle, io::Error> {
+        let promise = file_handle.create_sync_access_handle();
+
+        let result = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("Sync access not available (requires Web Worker): {:?}", e),
+                )
+            })?;
+
+        result
+            .dyn_into::<FileSystemSyncAccessHandle>()
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Result is not a FileSystemSyncAccessHandle: {:?}", e),
+                )
+            })
+    }
+
+    /// Converts a JavaScript error to an io::Error.
+    fn js_error_to_io_error(js_error: JsValue, context: &str) -> io::Error {
+        let error_string = if let Some(error) = js_error.dyn_ref::<js_sys::Error>() {
+            format!(
+                "{}: {}",
+                context,
+                error
+                    .message()
+                    .as_string()
+                    .unwrap_or_else(|| "Unknown error".to_string())
+            )
+        } else {
+            format!("{}: {:?}", context, js_error)
+        };
+        io::Error::new(io::ErrorKind::Other, error_string)
+    }
+}
+
+impl StorageBackend for WasmStorageBackend {
+    fn len(&self) -> Result<u64, io::Error> {
+        let handle = self.handle.lock().unwrap();
+
+        let size = handle.get_size().map_err(|e| {
+            Self::js_error_to_io_error(e, &format!("Failed to get size of '{}'", self.file_name))
+        })?;
+
+        Ok(size as u64)
+    }
+
+    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+        if out.is_empty() {
+            return Ok(());
+        }
+
+        let handle = self.handle.lock().unwrap();
+
+        // Read from OPFS at the specified offset
+        let options = web_sys::FileSystemReadWriteOptions::new();
+        options.set_at(offset as f64);
+
+        let bytes_read = handle
+            .read_with_u8_array_and_options(out, &options)
+            .map_err(|e| {
+                Self::js_error_to_io_error(
+                    e,
+                    &format!(
+                        "Failed to read {} bytes at offset {} from '{}'",
+                        out.len(),
+                        offset,
+                        self.file_name
+                    ),
+                )
+            })? as usize;
+
+        if bytes_read != out.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "Expected to read {} bytes but got {} bytes from '{}' at offset {}",
+                    out.len(),
+                    bytes_read,
+                    self.file_name,
+                    offset
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), io::Error> {
+        let handle = self.handle.lock().unwrap();
+
+        handle.truncate_with_f64(len as f64).map_err(|e| {
+            Self::js_error_to_io_error(
+                e,
+                &format!("Failed to set length of '{}' to {}", self.file_name, len),
+            )
+        })?;
+
+        Ok(())
+    }
+
+    fn sync_data(&self) -> Result<(), io::Error> {
+        let handle = self.handle.lock().unwrap();
+
+        handle.flush().map_err(|e| {
+            Self::js_error_to_io_error(e, &format!("Failed to flush '{}'", self.file_name))
+        })?;
+
+        Ok(())
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let handle = self.handle.lock().unwrap();
+
+        // Write to OPFS at the specified offset
+        let options = web_sys::FileSystemReadWriteOptions::new();
+        options.set_at(offset as f64);
+
+        let bytes_written = handle
+            .write_with_u8_array_and_options(data, &options)
+            .map_err(|e| {
+                Self::js_error_to_io_error(
+                    e,
+                    &format!(
+                        "Failed to write {} bytes at offset {} to '{}'",
+                        data.len(),
+                        offset,
+                        self.file_name
+                    ),
+                )
+            })? as usize;
+
+        if bytes_written != data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                format!(
+                    "Expected to write {} bytes but wrote {} bytes to '{}' at offset {}",
+                    data.len(),
+                    bytes_written,
+                    self.file_name,
+                    offset
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn close(&self) -> Result<(), io::Error> {
+        let handle = self.handle.lock().unwrap();
+
+        // close() doesn't return a Result in the web-sys API
+        handle.close();
+
+        Ok(())
+    }
+}
+
+/// Checks if OPFS synchronous access is supported in the current environment.
+///
+/// # Returns
+///
+/// `true` if running in a Web Worker with OPFS support, `false` otherwise.
+///
+/// # Example
+///
+/// ```ignore
+/// if !is_opfs_supported() {
+///     eprintln!("OPFS not supported. Requires a modern browser and Web Worker context.");
+///     return;
+/// }
+/// ```
+#[wasm_bindgen]
+pub fn is_opfs_supported() -> bool {
+    let global = js_sys::global();
+
+    // Check if we have navigator.storage.getDirectory
+    let navigator = match js_sys::Reflect::get(&global, &JsValue::from_str("navigator")) {
+        Ok(nav) => nav,
+        Err(_) => return false,
+    };
+
+    let storage = match js_sys::Reflect::get(&navigator, &JsValue::from_str("storage")) {
+        Ok(storage) => storage,
+        Err(_) => return false,
+    };
+
+    let get_directory = match js_sys::Reflect::get(&storage, &JsValue::from_str("getDirectory")) {
+        Ok(gd) => gd,
+        Err(_) => return false,
+    };
+
+    get_directory.is_function()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: These tests require wasm-bindgen-test to run in a browser environment
+    // Run with: wasm-pack test --headless --chrome
+
+    #[test]
+    fn test_opfs_detection() {
+        // This will only pass in a Web Worker context with OPFS support
+        // In native Rust tests, this will return false
+        let _supported = is_opfs_supported();
+        // We can't assert true/false here since it depends on the environment
+    }
+}

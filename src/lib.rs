@@ -101,6 +101,9 @@ mod tree_store;
 mod tuple_types;
 mod types;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 #[cfg(test)]
 fn create_tempfile() -> tempfile::NamedTempFile {
     if cfg!(target_os = "wasi") {

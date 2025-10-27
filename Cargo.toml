@@ -34,6 +34,20 @@ arc-swap = "1.7.1"
 [target.'cfg(target_os = "wasi")'.dependencies]
 libc = "0.2.174"
 
+[target.wasm32-unknown-unknown.dependencies]
+js-sys = "0.3.81"
+wasm-bindgen = "0.2.104"
+wasm-bindgen-futures = "0.4.54"
+web-sys = { version = "0.3.81", features = [
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemSyncAccessHandle",
+    "FileSystemGetFileOptions",
+    "FileSystemReadWriteOptions",
+    "Window",
+    "WorkerGlobalScope",
+] }
+
 # Common test/bench dependencies
 [dev-dependencies]
 rand = "0.9"
