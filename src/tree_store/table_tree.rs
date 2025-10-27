@@ -10,7 +10,7 @@ use crate::tree_store::{
     PageTrackerPolicy, RawBtree, TableType, TransactionalMemory,
 };
 use crate::types::{Key, Value};
-use crate::{DatabaseStats, Result};
+use crate::{DatabaseStats, Result, StorageError};
 use std::cmp::max;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem::size_of;
@@ -246,10 +246,6 @@ impl TableTreeMut<'_> {
     }
 
     /// Returns the current root of the table tree.
-    pub(crate) fn get_root(&self) -> Option<BtreeHeader> {
-        self.tree.get_root()
-    }
-
     #[cfg_attr(not(debug_assertions), expect(dead_code))]
     pub(crate) fn visit_all_pages<F>(&self, mut visitor: F) -> Result
     where
@@ -321,7 +317,16 @@ impl TableTreeMut<'_> {
     pub(crate) fn flush_table_root_updates(&mut self) -> Result<&mut Self> {
         for (name, (new_root, new_length)) in self.pending_table_updates.drain() {
             // Bypass .get_table() since the table types are dynamic
-            let mut definition = self.tree.get(&name.as_str())?.unwrap().value();
+            let definition_result = self.tree.get(&name.as_str())?;
+            if definition_result.is_none() {
+                eprintln!(
+                    "[TABLE_TREE_DEBUG] Table '{name}' in pending_table_updates not found in tree"
+                );
+                return Err(StorageError::Corrupted(format!(
+                    "Table '{name}' in pending_table_updates not found in tree. This may indicate corruption or improper table lifecycle management."
+                )));
+            }
+            let mut definition = definition_result.unwrap().value();
             // No-op if the root has not changed
             match definition {
                 InternalTableDefinition::Normal { table_root, .. }

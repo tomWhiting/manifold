@@ -764,9 +764,14 @@ impl Database {
     ) -> Result {
         let data_root = mem.get_data_root();
         {
+            eprintln!("[MARK_DEBUG] Visiting data tree, root: {data_root:?}");
             let fake = Arc::new(TransactionGuard::fake());
             let tables = TableTree::new(data_root, PageHint::None, fake, mem.clone())?;
             tables.visit_all_pages(|path| {
+                eprintln!(
+                    "[MARK_DEBUG] Data tree: marking page {:?}",
+                    path.page_number()
+                );
                 mem.mark_debug_allocated_page(path.page_number());
                 Ok(())
             })?;
@@ -774,19 +779,28 @@ impl Database {
 
         let system_root = mem.get_system_root();
         {
+            eprintln!("[MARK_DEBUG] Visiting system tree, root: {system_root:?}");
             let fake = Arc::new(TransactionGuard::fake());
             let system_tables = TableTree::new(system_root, PageHint::None, fake, mem.clone())?;
             system_tables.visit_all_pages(|path| {
+                eprintln!(
+                    "[MARK_DEBUG] System tree: marking page {:?}",
+                    path.page_number()
+                );
                 mem.mark_debug_allocated_page(path.page_number());
                 Ok(())
             })?;
         }
 
+        eprintln!("[MARK_DEBUG] Visiting DATA_FREED_TABLE");
         Self::visit_freed_tree(system_root, DATA_FREED_TABLE, mem.clone(), |page| {
+            eprintln!("[MARK_DEBUG] DATA_FREED_TABLE: marking page {page:?}");
             mem.mark_debug_allocated_page(page);
             Ok(())
         })?;
+        eprintln!("[MARK_DEBUG] Visiting SYSTEM_FREED_TABLE");
         Self::visit_freed_tree(system_root, SYSTEM_FREED_TABLE, mem.clone(), |page| {
+            eprintln!("[MARK_DEBUG] SYSTEM_FREED_TABLE: marking page {page:?}");
             mem.mark_debug_allocated_page(page);
             Ok(())
         })?;
@@ -964,7 +978,7 @@ impl Database {
         Ok(db)
     }
 
-    fn get_allocator_state_table(
+    pub(crate) fn get_allocator_state_table(
         mem: &Arc<TransactionalMemory>,
     ) -> Result<Option<AllocatorStateTree>> {
         // The allocator state table is only valid if the primary was written using 2-phase commit
@@ -1041,10 +1055,16 @@ impl Database {
         // Make a new quick-repair commit to update the allocator state table
         #[cfg(feature = "logging")]
         debug!("Writing allocator state table");
+        eprintln!("[DATABASE_DROP_DEBUG] ensure_allocator_state_table_and_trim: begin_write");
         let mut tx = self.begin_write()?;
+        eprintln!(
+            "[DATABASE_DROP_DEBUG] ensure_allocator_state_table_and_trim: setting quick_repair"
+        );
         tx.set_quick_repair(true);
         tx.set_shrink_policy(ShrinkPolicy::Maximum);
+        eprintln!("[DATABASE_DROP_DEBUG] ensure_allocator_state_table_and_trim: about to commit");
         tx.commit()?;
+        eprintln!("[DATABASE_DROP_DEBUG] ensure_allocator_state_table_and_trim: commit done");
 
         Ok(())
     }
@@ -1052,15 +1072,19 @@ impl Database {
 
 impl Drop for Database {
     fn drop(&mut self) {
+        eprintln!("[DATABASE_DROP_DEBUG] Database::drop called for instance {self:p}");
+
         if !thread::panicking() && self.ensure_allocator_state_table_and_trim().is_err() {
             #[cfg(feature = "logging")]
             warn!("Failed to write allocator state table. Repair may be required at restart.");
         }
 
+        eprintln!("[DATABASE_DROP_DEBUG] About to call mem.close()");
         if self.mem.close().is_err() {
             #[cfg(feature = "logging")]
             warn!("Failed to flush database file. Repair may be required at restart.");
         }
+        eprintln!("[DATABASE_DROP_DEBUG] Database::drop completed");
     }
 }
 

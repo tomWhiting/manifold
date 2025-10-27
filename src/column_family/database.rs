@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::mem::ManuallyDrop;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -8,6 +9,7 @@ use std::sync::{Arc, RwLock};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::backends::FileBackend;
 use crate::db::ReadableDatabase;
+use crate::transaction_tracker::TransactionId;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::tree_store::BtreeHeader;
 use crate::{
@@ -20,6 +22,7 @@ use super::builder::ColumnFamilyDatabaseBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use super::file_handle_pool::FileHandlePool;
 use super::header::{ColumnFamilyMetadata, FreeSegment, MasterHeader, PAGE_SIZE, Segment};
+use super::partitioned_backend::PartitionedStorageBackend;
 use super::state::ColumnFamilyState;
 use super::wal::checkpoint::CheckpointManager;
 #[cfg(not(target_arch = "wasm32"))]
@@ -306,6 +309,170 @@ impl ColumnFamilyDatabase {
         })
     }
 
+    /// Performs WAL recovery without creating Database instances.
+    /// Operates entirely at the `TransactionalMemory` layer to avoid Drop cleanup issues.
+    ///
+    /// # Arguments
+    /// * `column_families` - Map of column family names to their states
+    /// * `handle_pool` - File handle pool for acquiring storage backends
+    /// * `journal` - WAL journal to read entries from
+    ///
+    /// # Returns
+    /// Ok(()) if recovery succeeded, Err otherwise
+    #[cfg(not(target_arch = "wasm32"))]
+    fn perform_wal_recovery(
+        column_families: &HashMap<String, Arc<ColumnFamilyState>>,
+        handle_pool: &FileHandlePool,
+        journal: &WALJournal,
+    ) -> Result<(), DatabaseError> {
+        // Read all WAL entries
+        let entries = journal
+            .read_from(0)
+            .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        #[cfg(feature = "logging")]
+        log::info!("Performing WAL recovery for {} entries", entries.len());
+
+        // Group entries by column family
+        let mut cf_entries: HashMap<String, Vec<&super::wal::entry::WALEntry>> = HashMap::new();
+        for entry in &entries {
+            cf_entries
+                .entry(entry.cf_name.clone())
+                .or_default()
+                .push(entry);
+        }
+
+        // Create Database instances for recovery using ManuallyDrop to prevent Drop cleanup
+        // This gives us proper initialization (allocator state, repair if needed)
+        // but prevents Database::drop from running cleanup that would corrupt recovery
+        let mut recovery_dbs: HashMap<String, ManuallyDrop<Database>> = HashMap::new();
+
+        for (cf_name, cf_state) in column_families {
+            if !cf_entries.contains_key(cf_name) {
+                continue; // Skip CFs not in WAL
+            }
+
+            // Get storage backend directly from ColumnFamilyState
+            let backend = handle_pool.acquire(cf_name)?;
+
+            // Create PartitionedStorageBackend
+            let segments = cf_state.segments.read().unwrap().clone();
+            let file_growth_lock = handle_pool.file_growth_lock();
+
+            let partition_backend = PartitionedStorageBackend::with_segments(
+                backend,
+                segments,
+                None, // No expansion callback during recovery
+                file_growth_lock,
+            );
+
+            // Create Database with proper initialization (handles repair, allocator state, etc.)
+            // Wrap in ManuallyDrop to prevent Database::drop cleanup from running
+            let db = ManuallyDrop::new(Database::builder().create_with_backend(partition_backend)?);
+
+            recovery_dbs.insert(cf_name.clone(), db);
+        }
+
+        // Apply WAL entries to each Database
+        for (cf_name, entries_for_cf) in &cf_entries {
+            let db = recovery_dbs.get(cf_name).ok_or_else(|| {
+                DatabaseError::Storage(StorageError::from(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("No Database for CF '{cf_name}'"),
+                )))
+            })?;
+
+            let mem = db.get_memory();
+
+            for entry in entries_for_cf {
+                // Convert WAL payload to BtreeHeader format
+                let data_root =
+                    entry
+                        .payload
+                        .user_root
+                        .map(|(page_num, checksum, length)| BtreeHeader {
+                            root: page_num,
+                            checksum,
+                            length,
+                        });
+
+                let system_root = entry
+                    .payload
+                    .system_root
+                    .map(|(page_num, checksum, length)| BtreeHeader {
+                        root: page_num,
+                        checksum,
+                        length,
+                    });
+
+                // Apply WAL transaction (updates secondary slot)
+                mem.apply_wal_transaction(
+                    data_root,
+                    system_root,
+                    TransactionId::new(entry.transaction_id),
+                )?;
+            }
+        }
+
+        // Commit all recovered state at TransactionalMemory level
+        // This promotes secondary → primary and fsyncs
+        for (cf_name, db) in &recovery_dbs {
+            // Get the last WAL entry for this CF to use its transaction ID
+            let last_entry = cf_entries
+                .get(cf_name)
+                .and_then(|entries| entries.last())
+                .ok_or_else(|| {
+                    DatabaseError::Storage(StorageError::from(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("No entries for CF '{cf_name}'"),
+                    )))
+                })?;
+
+            let mem = db.get_memory();
+            let data_root = mem.get_data_root();
+            let system_root = mem.get_system_root();
+            let txn_id = TransactionId::new(last_entry.transaction_id);
+
+            // Directly commit: swap secondary to primary and fsync
+            // Use two_phase=false and shrink_policy=Never for simplicity
+            mem.commit(
+                data_root,
+                system_root,
+                txn_id,
+                false,
+                crate::tree_store::ShrinkPolicy::Never,
+            )
+            .map_err(|e| {
+                DatabaseError::Storage(StorageError::from(io::Error::other(format!(
+                    "recovery commit failed for '{cf_name}': {e}"
+                ))))
+            })?;
+
+            #[cfg(feature = "logging")]
+            log::debug!(
+                "Recovered CF '{cf_name}' to transaction {}",
+                txn_id.raw_id()
+            );
+        }
+
+        // Truncate WAL after successful recovery
+        let latest_seq = entries.last().unwrap().sequence;
+        journal
+            .truncate(latest_seq + 1)
+            .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
+
+        #[cfg(feature = "logging")]
+        log::info!("WAL recovery completed successfully");
+
+        // All ManuallyDrop<Database> instances drop here
+        // ManuallyDrop prevents Database::drop from running, so NO cleanup, NO corruption
+        Ok(())
+    }
+
     /// Internal implementation of open, called by the builder (native platforms).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_with_builder(
@@ -366,107 +533,14 @@ impl ColumnFamilyDatabase {
             let journal = WALJournal::open(&wal_path)
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
 
-            // Perform WAL recovery by reading all entries from the journal
+            // Perform WAL recovery without creating Database instances
+            // This operates entirely at the TransactionalMemory layer to avoid Drop cleanup issues
             let entries = journal
                 .read_from(0)
                 .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
 
             if !entries.is_empty() {
-                #[cfg(feature = "logging")]
-                log::info!("WAL recovery: applying {} transactions", entries.len());
-
-                // Create temporary database instance for recovery (without WAL to avoid recursion)
-                let temp_db = Self {
-                    path: path.clone(),
-                    header_backend: Arc::clone(&header_backend),
-                    handle_pool: Arc::clone(&handle_pool),
-                    column_families: Arc::new(RwLock::new(column_families.clone())),
-                    header: Arc::clone(&header),
-                    wal_journal: None, // Important: no WAL during recovery to avoid appending during replay
-                    checkpoint_manager: None, // No checkpoint manager during recovery
-                };
-
-                // Apply each WAL entry to the database
-                for entry in &entries {
-                    // Get or create the column family
-                    let cf = temp_db.column_family(&entry.cf_name).map_err(|e| {
-                        DatabaseError::Storage(StorageError::from(io::Error::new(
-                            io::ErrorKind::NotFound,
-                            format!(
-                                "column family '{}' not found during recovery: {}",
-                                entry.cf_name, e
-                            ),
-                        )))
-                    })?;
-
-                    // Get the Database instance
-                    let cf_db = cf.ensure_database()?;
-
-                    // Get the TransactionalMemory
-                    let mem = cf_db.get_memory();
-
-                    // Convert WAL payload to BtreeHeader format
-                    let data_root =
-                        entry
-                            .payload
-                            .user_root
-                            .map(|(page_num, checksum, length)| BtreeHeader {
-                                root: page_num,
-                                checksum,
-                                length,
-                            });
-
-                    let system_root =
-                        entry
-                            .payload
-                            .system_root
-                            .map(|(page_num, checksum, length)| BtreeHeader {
-                                root: page_num,
-                                checksum,
-                                length,
-                            });
-
-                    // Apply the WAL transaction
-                    mem.apply_wal_transaction(
-                        data_root,
-                        system_root,
-                        crate::transaction_tracker::TransactionId::new(entry.transaction_id),
-                    )?;
-                }
-
-                // Sync all column families to persist recovery
-                for cf_name in temp_db.list_column_families() {
-                    if let Ok(cf) = temp_db.column_family(&cf_name)
-                        && let Ok(cf_db) = cf.ensure_database()
-                    {
-                        // Commit an empty transaction with durability to fsync
-                        let mut txn = cf_db.begin_write().map_err(|e| {
-                            DatabaseError::Storage(StorageError::from(io::Error::other(format!(
-                                "recovery fsync begin_write failed: {e}"
-                            ))))
-                        })?;
-                        txn.set_durability(crate::Durability::Immediate)
-                            .map_err(|e| {
-                                DatabaseError::Storage(StorageError::from(io::Error::other(
-                                    format!("recovery set_durability failed: {e}"),
-                                )))
-                            })?;
-                        txn.commit().map_err(|e| {
-                            DatabaseError::Storage(StorageError::from(io::Error::other(format!(
-                                "recovery commit failed: {e}"
-                            ))))
-                        })?;
-                    }
-                }
-
-                // Truncate WAL after successful recovery
-                let latest_seq = entries.last().unwrap().sequence;
-                journal
-                    .truncate(latest_seq + 1)
-                    .map_err(|e| DatabaseError::Storage(StorageError::from(e)))?;
-
-                #[cfg(feature = "logging")]
-                log::info!("WAL recovery completed successfully");
+                Self::perform_wal_recovery(&column_families, &handle_pool, &journal)?;
             }
 
             Some(Arc::new(journal))

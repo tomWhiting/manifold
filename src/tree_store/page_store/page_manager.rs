@@ -245,10 +245,48 @@ impl TransactionalMemory {
         let header_bytes = storage.read_direct(0, DB_HEADER_SIZE)?;
         let (mut header, repair_info) = DatabaseHeader::from_bytes(&header_bytes)?;
 
+        eprintln!(
+            "[MEMORY_NEW_DEBUG] Header read from disk - primary_slot roots: user={:?}, system={:?}",
+            header
+                .primary_slot()
+                .user_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum)),
+            header
+                .primary_slot()
+                .system_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum))
+        );
+        eprintln!(
+            "[MEMORY_NEW_DEBUG] Header read from disk - secondary_slot roots: user={:?}, system={:?}",
+            header
+                .secondary_slot()
+                .user_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum)),
+            header
+                .secondary_slot()
+                .system_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum))
+        );
+        eprintln!(
+            "[MEMORY_NEW_DEBUG] repair_info: primary_corrupted={}, secondary_corrupted={}",
+            repair_info.primary_corrupted, repair_info.secondary_corrupted
+        );
+
         assert_eq!(header.page_size() as usize, page_size);
         assert!(storage.raw_file_len()? >= header.layout().len());
         let needs_recovery =
             header.recovery_required || header.layout().len() != storage.raw_file_len()?;
+        eprintln!(
+            "[MEMORY_NEW_DEBUG] needs_recovery={}, recovery_required={}, layout_len={}, file_len={}",
+            needs_recovery,
+            header.recovery_required,
+            header.layout().len(),
+            storage.raw_file_len()?
+        );
         if needs_recovery {
             if read_only {
                 return Err(DatabaseError::RepairAborted);
@@ -262,7 +300,21 @@ impl TransactionalMemory {
                 region_max_pages,
                 page_size.try_into().unwrap(),
             ));
-            header.pick_primary_for_repair(repair_info)?;
+            let swapped = header.pick_primary_for_repair(repair_info)?;
+            eprintln!(
+                "[MEMORY_NEW_DEBUG] After pick_primary_for_repair (swapped={}), primary_slot roots: user={:?}, system={:?}",
+                swapped,
+                header
+                    .primary_slot()
+                    .user_root
+                    .as_ref()
+                    .map(|h| (h.root, h.checksum)),
+                header
+                    .primary_slot()
+                    .system_root
+                    .as_ref()
+                    .map(|h| (h.root, h.checksum))
+            );
             assert!(!repair_info.invalid_magic_number);
             storage
                 .write(0, DB_HEADER_SIZE, true)?
@@ -310,7 +362,17 @@ impl TransactionalMemory {
 
     #[cfg(debug_assertions)]
     pub(crate) fn mark_debug_allocated_page(&self, page: PageNumber) {
-        assert!(self.allocated_pages.lock().unwrap().insert(page));
+        let mut allocated = self.allocated_pages.lock().unwrap();
+        if !allocated.insert(page) {
+            eprintln!(
+                "[ALLOCATOR_DEBUG] Attempted to mark page {page:?} as allocated, but it was already in the set!"
+            );
+            eprintln!(
+                "[ALLOCATOR_DEBUG] Current allocated_pages count: {}",
+                allocated.len()
+            );
+            panic!("Page {page:?} already marked as allocated");
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -420,10 +482,59 @@ impl TransactionalMemory {
     }
 
     fn write_header(&self, header: &DatabaseHeader) -> Result {
+        eprintln!(
+            "[WRITE_HEADER_DEBUG] Writing header - primary_slot: user={:?}, system={:?}",
+            header
+                .primary_slot()
+                .user_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum)),
+            header
+                .primary_slot()
+                .system_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum))
+        );
+        eprintln!(
+            "[WRITE_HEADER_DEBUG] Writing header - secondary_slot: user={:?}, system={:?}",
+            header
+                .secondary_slot()
+                .user_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum)),
+            header
+                .secondary_slot()
+                .system_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum))
+        );
+
+        let header_bytes = header.to_bytes(true);
+
+        // Verify what was serialized by deserializing it back
+        let (verified_header, _) =
+            crate::tree_store::page_store::header::DatabaseHeader::from_bytes(&header_bytes)
+                .map_err(|e| {
+                    StorageError::Corrupted(format!("Failed to verify serialized header: {e}"))
+                })?;
+        eprintln!(
+            "[WRITE_HEADER_DEBUG] Verified serialized header - primary_slot: user={:?}, system={:?}",
+            verified_header
+                .primary_slot()
+                .user_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum)),
+            verified_header
+                .primary_slot()
+                .system_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum))
+        );
+
         self.storage
             .write(0, DB_HEADER_SIZE, true)?
             .mem_mut()
-            .copy_from_slice(&header.to_bytes(true));
+            .copy_from_slice(&header_bytes);
 
         Ok(())
     }
@@ -623,6 +734,12 @@ impl TransactionalMemory {
         two_phase: bool,
         shrink_policy: ShrinkPolicy,
     ) -> Result {
+        eprintln!(
+            "[COMMIT_DEBUG] commit_inner called with data_root={:?}, system_root={:?}",
+            data_root.as_ref().map(|h| (h.root, h.checksum)),
+            system_root.as_ref().map(|h| (h.root, h.checksum))
+        );
+
         // All mutable pages must be dropped, this ensures that when a transaction completes
         // no more writes can happen to the pages it allocated. Thus it is safe to make them visible
         // to future read transactions
@@ -647,6 +764,12 @@ impl TransactionalMemory {
         secondary.user_root = data_root;
         secondary.system_root = system_root;
 
+        eprintln!(
+            "[COMMIT_DEBUG] After setting secondary slot: user_root={:?}, system_root={:?}",
+            secondary.user_root.as_ref().map(|h| (h.root, h.checksum)),
+            secondary.system_root.as_ref().map(|h| (h.root, h.checksum))
+        );
+
         self.write_header(&header)?;
 
         // Use 2-phase commit, if checksums are disabled
@@ -658,6 +781,20 @@ impl TransactionalMemory {
         // These two bits need to be written atomically
         header.swap_primary_slot();
         header.two_phase_commit = two_phase;
+
+        eprintln!(
+            "[COMMIT_DEBUG] After swap_primary_slot, primary now has: user_root={:?}, system_root={:?}",
+            header
+                .primary_slot()
+                .user_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum)),
+            header
+                .primary_slot()
+                .system_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum))
+        );
 
         // Write the new header to disk
         self.write_header(&header)?;
@@ -685,6 +822,23 @@ impl TransactionalMemory {
             old_transaction_id
         );
         state.header = header.clone();
+
+        eprintln!(
+            "[COMMIT_INNER_DEBUG] After updating state.header - primary_slot: user={:?}, system={:?}",
+            state
+                .header
+                .primary_slot()
+                .user_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum)),
+            state
+                .header
+                .primary_slot()
+                .system_root
+                .as_ref()
+                .map(|h| (h.root, h.checksum))
+        );
+
         // Update lock-free snapshot BEFORE releasing the lock
         self.header_snapshot.store(Arc::new(header));
         self.read_from_secondary.store(false, Ordering::Release);
@@ -935,11 +1089,18 @@ impl TransactionalMemory {
 
     pub(crate) fn get_system_root(&self) -> Option<BtreeHeader> {
         let header = self.header_snapshot.load();
-        if self.read_from_secondary.load(Ordering::Acquire) {
+        let read_from_secondary = self.read_from_secondary.load(Ordering::Acquire);
+        let result = if read_from_secondary {
             header.secondary_slot().system_root
         } else {
             header.primary_slot().system_root
-        }
+        };
+        eprintln!(
+            "[GET_SYSTEM_ROOT_DEBUG] read_from_secondary={}, returning system_root={:?}",
+            read_from_secondary,
+            result.as_ref().map(|h| (h.root, h.checksum))
+        );
+        result
     }
 
     pub(crate) fn get_last_committed_transaction_id(&self) -> Result<TransactionId> {

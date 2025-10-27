@@ -355,18 +355,19 @@ fn test_recovery_from_incomplete_checkpoint() {
 /// DISABLED: This test reveals a bug with rapid reopen causing page allocation errors
 /// or database corruption. Need to investigate checkpoint/recovery race condition.
 #[test]
-#[ignore]
 fn test_rapid_shutdown_reopen_cycles() {
     let temp_file = NamedTempFile::new().unwrap();
     let db_path = temp_file.path().to_path_buf();
 
     for cycle in 0..10 {
+        eprintln!("[TEST] Starting cycle {}", cycle);
         let db = ColumnFamilyDatabase::builder()
             .pool_size(64)
             .open(&db_path)
             .unwrap();
 
         if cycle == 0 {
+            eprintln!("[TEST] Creating column family test_cf");
             db.create_column_family("test_cf", None).unwrap();
         }
 
@@ -376,7 +377,9 @@ fn test_rapid_shutdown_reopen_cycles() {
             let mut table = txn.open_table(TEST_TABLE).unwrap();
             table.insert(&(cycle as u64), &"cycle_data").unwrap();
         }
+        eprintln!("[TEST] Committing cycle {}", cycle);
         txn.commit().unwrap();
+        eprintln!("[TEST] Committed cycle {}", cycle);
 
         // Explicit drop
         drop(cf);
@@ -599,7 +602,6 @@ fn test_single_reopen_with_wal() {
 /// Minimal test: Two rapid shutdown/reopen cycles with WAL
 /// DISABLED: Demonstrates the WAL replay bug - see test_rapid_shutdown_reopen_cycles
 #[test]
-#[ignore]
 fn test_two_reopen_cycles_with_wal() {
     let temp_file = NamedTempFile::new().unwrap();
     let db_path = temp_file.path().to_path_buf();

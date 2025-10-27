@@ -1414,12 +1414,29 @@ impl WriteTransaction {
         self.store_data_freed_pages(data_freed)?;
         self.store_allocated_pages(allocated_pages.into_iter().collect())?;
 
-        // Append to WAL if enabled (before making commit visible)
+        // Prepare system root with finalized checksums based on durability
+        // This MUST happen before writing to WAL to avoid DEFERRED checksums
+        let (system_root, post_commit_frees) = match self.durability {
+            InternalDurability::None => {
+                let (sys_root, frees) = self.prepare_system_root_for_non_durable_commit()?;
+                (sys_root, Some(frees))
+            }
+            InternalDurability::Immediate => {
+                if self.wal_journal.is_some() {
+                    // WAL path: use non-durable preparation
+                    let (sys_root, frees) = self.prepare_system_root_for_non_durable_commit()?;
+                    (sys_root, Some(frees))
+                } else {
+                    // No WAL: use durable preparation
+                    let sys_root = self.prepare_system_root_for_durable_commit()?;
+                    (sys_root, None)
+                }
+            }
+        };
+
+        // Append to WAL if enabled (AFTER system root is finalized)
         if let (Some(wal_journal), Some(cf_name)) = (&self.wal_journal, &self.cf_name) {
             use crate::column_family::wal::entry::{WALEntry, WALTransactionPayload};
-
-            // Get system root using the new get_root() method
-            let system_root = self.system_tables.lock().unwrap().table_tree.get_root();
 
             let payload = WALTransactionPayload {
                 user_root: user_root.map(|h| (h.root, h.checksum, h.length)),
@@ -1456,17 +1473,53 @@ impl WriteTransaction {
             self.transaction_id, self.durability, self.two_phase_commit, self.quick_repair
         );
 
-        // With WAL, we can use non_durable_commit even for Immediate durability
-        // because the WAL has been fsynced above
+        // Perform final commit to memory
+        // System root is already finalized, so we can commit directly
         match self.durability {
-            InternalDurability::None => self.non_durable_commit(user_root)?,
+            InternalDurability::None => {
+                self.mem
+                    .non_durable_commit(user_root, system_root, self.transaction_id)?;
+                self.transaction_tracker.register_non_durable_commit(
+                    self.transaction_id,
+                    self.mem.get_last_durable_transaction_id()?,
+                );
+                if let Some(frees) = post_commit_frees {
+                    for page in frees {
+                        self.mem.free(page, &mut PageTrackerPolicy::Ignore);
+                    }
+                }
+            }
             InternalDurability::Immediate => {
                 if self.wal_journal.is_some() {
                     // WAL already fsynced, just make changes visible
-                    self.non_durable_commit(user_root)?;
+                    self.mem
+                        .non_durable_commit(user_root, system_root, self.transaction_id)?;
+                    self.transaction_tracker.register_non_durable_commit(
+                        self.transaction_id,
+                        self.mem.get_last_durable_transaction_id()?,
+                    );
+                    if let Some(frees) = post_commit_frees {
+                        for page in frees {
+                            self.mem.free(page, &mut PageTrackerPolicy::Ignore);
+                        }
+                    }
                 } else {
                     // No WAL, use traditional durable commit
-                    self.durable_commit(user_root)?;
+                    // System root already prepared, now do the final commit steps
+                    self.mem.commit(
+                        user_root,
+                        system_root,
+                        self.transaction_id,
+                        self.two_phase_commit,
+                        self.shrink_policy,
+                    )?;
+                    self.transaction_tracker.clear_pending_non_durable_commits();
+                    // Free system pages immediately for durable commits
+                    let system_freed_pages =
+                        self.system_tables.lock().unwrap().system_freed_pages();
+                    for page in system_freed_pages.lock().unwrap().drain(..) {
+                        self.mem.free(page, &mut PageTrackerPolicy::Ignore);
+                    }
                 }
             }
         }
@@ -1617,7 +1670,10 @@ impl WriteTransaction {
         Ok(())
     }
 
-    pub(crate) fn durable_commit(&mut self, user_root: Option<BtreeHeader>) -> Result {
+    /// Prepares and finalizes the system root for commit.
+    /// This must be called before writing to WAL to ensure checksums are finalized.
+    /// Returns the finalized `system_root` and a vector of pages to free post-commit.
+    fn prepare_system_root_for_durable_commit(&mut self) -> Result<Option<BtreeHeader>> {
         let free_until_transaction = self
             .transaction_tracker
             .oldest_live_read_transaction()
@@ -1671,29 +1727,15 @@ impl WriteTransaction {
         }
 
         let system_root = system_tree.finalize_dirty_checksums()?;
-
-        self.mem.commit(
-            user_root,
-            system_root,
-            self.transaction_id,
-            self.two_phase_commit,
-            self.shrink_policy,
-        )?;
-
-        // Mark any pending non-durable commits as fully committed.
-        self.transaction_tracker.clear_pending_non_durable_commits();
-
-        // Immediately free the pages that were freed from the system-tree. These are only
-        // accessed by write transactions, so it's safe to free them as soon as the commit is done.
-        for page in system_freed_pages.lock().unwrap().drain(..) {
-            self.mem.free(page, &mut PageTrackerPolicy::Ignore);
-        }
-
-        Ok(())
+        Ok(system_root)
     }
 
-    // Commit without a durability guarantee
-    pub(crate) fn non_durable_commit(&mut self, user_root: Option<BtreeHeader>) -> Result {
+    /// Prepares and finalizes the system root for non-durable commit.
+    /// This must be called before writing to WAL to ensure checksums are finalized.
+    /// Returns the finalized `system_root` and a vector of pages to free post-commit.
+    fn prepare_system_root_for_non_durable_commit(
+        &mut self,
+    ) -> Result<(Option<BtreeHeader>, Vec<PageNumber>)> {
         let mut free_until_transaction = self
             .transaction_tracker
             .oldest_live_read_nondurable_transaction()
@@ -1738,20 +1780,7 @@ impl WriteTransaction {
                 .finalize_dirty_checksums()?
         };
 
-        self.mem
-            .non_durable_commit(user_root, system_root, self.transaction_id)?;
-        // Register this as a non-durable transaction to ensure that the freed pages we just pushed
-        // are only processed after this has been persisted
-        self.transaction_tracker.register_non_durable_commit(
-            self.transaction_id,
-            self.mem.get_last_durable_transaction_id()?,
-        );
-
-        for page in post_commit_frees {
-            self.mem.free(page, &mut PageTrackerPolicy::Ignore);
-        }
-
-        Ok(())
+        Ok((system_root, post_commit_frees))
     }
 
     // Relocate pages to lower number regions/pages
