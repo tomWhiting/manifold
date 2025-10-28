@@ -20,9 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = ColumnFamilyDatabase::open(dir.path().join("iot.db"))?;
     let cf = db.column_family_or_create("sensor_data")?;
 
-    let base_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_millis() as u64;
+    let base_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
 
     println!("Simulating IoT sensor network...\n");
     println!("Sensors:");
@@ -39,17 +37,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Simulate 100 readings from 4 sensors (400 total data points)
         let mut batch = Vec::new();
-        
+
         for i in 0..100 {
             let timestamp = base_time + (i * 5000); // 5 second intervals
-            
+
             // Temperature sensors (°C)
             let temp_living = 22.0 + (i as f32 * 0.1).sin() * 2.0;
             let temp_bedroom = 20.0 + (i as f32 * 0.15).cos() * 1.5;
-            
+
             // Humidity sensor (%)
             let humidity = 45.0 + (i as f32 * 0.08).sin() * 10.0;
-            
+
             // Pressure sensor (hPa)
             let pressure = 1013.0 + (i as f32 * 0.05).cos() * 5.0;
 
@@ -60,12 +58,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         println!("Writing {} sensor readings in batch...", batch.len());
-        
+
         // Batch write is more efficient than individual writes
-        ts.write_batch(batch, false)?; // false = data not pre-sorted
-        
+        ts.write_batch(&batch, false)?; // false = data not pre-sorted
+
         println!("Batch write complete!\n");
-        
+
         drop(ts);
         write_txn.commit()?;
     }
@@ -116,11 +114,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Compare both temperature sensors
         println!("Temperature comparison (sample at t+100s):");
         let sample_time = base_time + 100_000;
-        
+
         if let Some(living) = ts_read.get("sensor_01.temperature", sample_time)? {
             println!("  Living room: {:.1}°C", living);
         }
-        
+
         if let Some(bedroom) = ts_read.get("sensor_02.temperature", sample_time)? {
             println!("  Bedroom: {:.1}°C", bedroom);
         }

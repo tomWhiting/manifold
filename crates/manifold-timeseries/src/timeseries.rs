@@ -76,16 +76,16 @@ impl<'txn, E: TimestampEncoding> TimeSeriesTable<'txn, E> {
     ///
     /// # Arguments
     ///
-    /// * `points` - Vector of (`series_id`, `timestamp_ms`, `value`) tuples
+    /// * `points` - Slice of (`series_id`, `timestamp_ms`, `value`) tuples
     /// * `sorted` - Whether the points are pre-sorted by (`timestamp`, `series_id`)
     pub fn write_batch(
         &mut self,
-        points: Vec<(&str, u64, f32)>,
+        points: &[(&str, u64, f32)],
         sorted: bool,
     ) -> Result<(), StorageError> {
         let items: Vec<((u64, &str), f32)> = points
-            .into_iter()
-            .map(|(series_id, timestamp_ms, value)| ((timestamp_ms, series_id), value))
+            .iter()
+            .map(|(series_id, timestamp_ms, value)| ((*timestamp_ms, *series_id), *value))
             .collect();
 
         self.raw.insert_bulk(items, sorted)?;

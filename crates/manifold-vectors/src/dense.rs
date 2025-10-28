@@ -28,10 +28,10 @@ impl<'txn, const DIM: usize> VectorTable<'txn, DIM> {
     /// Inserts multiple vectors in a single batch operation.
     pub fn insert_batch(
         &mut self,
-        items: Vec<(&str, [f32; DIM])>,
+        items: &[(&str, [f32; DIM])],
         sorted: bool,
     ) -> Result<(), StorageError> {
-        self.table.insert_bulk(items, sorted)?;
+        self.table.insert_bulk(items.to_vec(), sorted)?;
         Ok(())
     }
 

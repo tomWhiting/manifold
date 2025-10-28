@@ -1,7 +1,7 @@
 use manifold::column_family::ColumnFamilyDatabase;
 use manifold_vectors::multi::{MultiVectorTable, MultiVectorTableRead};
 use manifold_vectors::sparse::{SparseVector, SparseVectorTable, SparseVectorTableRead};
-use manifold_vectors::{distance, VectorTable, VectorTableRead};
+use manifold_vectors::{VectorTable, VectorTableRead, distance};
 use tempfile::NamedTempFile;
 
 #[test]
@@ -158,7 +158,7 @@ fn test_batch_insert() {
             ("vec2", [2.0f32; 32]),
             ("vec3", [3.0f32; 32]),
         ];
-        table.insert_batch(items, false).unwrap();
+        table.insert_batch(&items, false).unwrap();
         assert_eq!(table.len().unwrap(), 3);
         drop(table);
         write_txn.commit().unwrap();
