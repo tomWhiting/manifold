@@ -110,7 +110,15 @@ pub fn benchmark<T: BenchDatabase + Send + Sync>(
             items.push((key.to_vec(), value));
         }
         // Use bulk insert API (falls back to individual inserts for databases that don't support it)
-        inserter.insert_bulk(items).unwrap();
+        inserter
+            .insert_bulk(items)
+            .map_err(|_| {
+                eprintln!(
+                    "ERROR: {} bulk insert failed during bulk load",
+                    T::db_type_name()
+                );
+            })
+            .unwrap();
     }
     drop(inserter);
     txn.commit().unwrap();
@@ -162,7 +170,15 @@ pub fn benchmark<T: BenchDatabase + Send + Sync>(
                 items.push((key.to_vec(), value));
             }
             // Use bulk insert API for batch
-            inserter.insert_bulk(items).unwrap();
+            inserter
+                .insert_bulk(items)
+                .map_err(|_| {
+                    eprintln!(
+                        "ERROR: {} bulk insert failed during batch writes",
+                        T::db_type_name()
+                    );
+                })
+                .unwrap();
             drop(inserter);
             txn.commit().unwrap();
         }

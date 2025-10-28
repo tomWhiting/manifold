@@ -128,6 +128,10 @@ fn main() {
     for (i, identified_smallests_row) in identified_smallests.iter_mut().enumerate() {
         let mut smallest = None;
         for (j, _) in identified_smallests_row.iter().enumerate() {
+            // Skip if this database doesn't have this benchmark result
+            if i >= results[j].len() {
+                continue;
+            }
             let (_, rt) = &results[j][i];
             smallest = match smallest {
                 Some((_, prev)) if rt < prev => Some((j, rt)),
@@ -135,17 +139,21 @@ fn main() {
                 None => Some((j, rt)),
             };
         }
-        let (j, _rt) = smallest.unwrap();
-        identified_smallests_row[j] = true;
+        if let Some((j, _rt)) = smallest {
+            identified_smallests_row[j] = true;
+        }
     }
 
     for (j, results) in results.iter().enumerate() {
         for (i, (_benchmark, result_type)) in results.iter().enumerate() {
-            rows[i].push(if identified_smallests[i][j] {
-                format!("**{result_type}**")
-            } else {
-                result_type.to_string()
-            });
+            // Ensure we have a row for this benchmark
+            if i < rows.len() {
+                rows[i].push(if identified_smallests[i][j] {
+                    format!("**{result_type}**")
+                } else {
+                    result_type.to_string()
+                });
+            }
         }
     }
 
