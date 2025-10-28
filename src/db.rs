@@ -1,7 +1,7 @@
 use crate::transaction_tracker::{TransactionId, TransactionTracker};
 use crate::tree_store::{
-    BtreeHeader, InternalTableDefinition, PAGE_SIZE, PageHint, PageNumber, ReadOnlyBackend,
-    ShrinkPolicy, TableTree, TableType, TransactionalMemory,
+    BtreeHeader, InternalTableDefinition, PAGE_SIZE, PageHint, PageNumber, ShrinkPolicy, TableTree,
+    TableType, TransactionalMemory,
 };
 use crate::types::{Key, Value};
 use crate::{
@@ -426,7 +426,7 @@ impl ReadOnlyDatabase {
         #[cfg(feature = "logging")]
         info!("Opening database in read-only {:?}", &file_path);
         let mem = TransactionalMemory::new(
-            Box::new(ReadOnlyBackend::new(file)),
+            file,
             false,
             page_size,
             region_size,

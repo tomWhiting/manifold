@@ -60,6 +60,7 @@ tempfile = "3.5.0"
 redb2_6 = { version = "=2.6.0", package = "redb" }
 bincode = "2.0.1"
 uuid = { version= "1.17.0", features = ["v4"] }
+nix = { version = "0.30.1", features = ["process", "signal"] }
 
 [features]
 # Enables log messages

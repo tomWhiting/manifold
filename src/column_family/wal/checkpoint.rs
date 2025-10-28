@@ -287,24 +287,22 @@ impl CheckpointManager {
             Self::apply_wal_entry_to_database(database, entry)?;
         }
 
-        // Fsync all column families to persist changes
+        // Flush and durably commit all column families to persist changes
         // This ensures the main database is durable before we truncate the WAL
         for cf_name in database.list_column_families() {
             if let Ok(cf) = database.column_family(&cf_name)
                 && let Ok(db) = cf.ensure_database()
             {
-                // Sync the database to persist checkpoint changes
-                // We access the underlying storage through a write transaction
-                // that we immediately commit with durability
-                let mut txn = db
-                    .begin_write()
-                    .map_err(|e| io::Error::other(format!("begin write failed: {e}")))?;
+                let mem = db.get_memory();
 
-                txn.set_durability(crate::Durability::Immediate)
-                    .map_err(|e| io::Error::other(format!("set durability failed: {e}")))?;
+                // Get current state from secondary slot
+                let (data_root, system_root, txn_id) = mem
+                    .get_current_secondary_state()
+                    .map_err(|e| io::Error::other(format!("get state failed: {e}")))?;
 
-                txn.commit()
-                    .map_err(|e| io::Error::other(format!("commit failed: {e}")))?;
+                // Perform checkpoint commit: flush all pending writes and do durable commit
+                mem.checkpoint_commit(data_root, system_root, txn_id)
+                    .map_err(|e| io::Error::other(format!("checkpoint commit failed: {e}")))?;
             }
         }
 

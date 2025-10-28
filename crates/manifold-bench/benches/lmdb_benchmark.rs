@@ -1,4 +1,5 @@
 use std::env::current_dir;
+use std::sync::Arc;
 use std::{fs, process};
 use tempfile::{NamedTempFile, TempDir};
 
@@ -8,6 +9,7 @@ use common::*;
 fn main() {
     let _ = env_logger::try_init();
     let tmpdir = current_dir().unwrap().join(".benchmark");
+    let _ = fs::remove_dir_all(&tmpdir);
     fs::create_dir(&tmpdir).unwrap();
 
     let tmpdir2 = tmpdir.clone();
@@ -17,13 +19,17 @@ fn main() {
     })
     .unwrap();
 
-    let redb_results = {
+    let manifold_results = {
         let tmpfile: NamedTempFile = NamedTempFile::new_in(&tmpdir).unwrap();
-        let mut db = manifold::Database::builder()
-            .set_cache_size(CACHE_SIZE)
-            .create(tmpfile.path())
+        // Use ColumnFamilyDatabase with WAL disabled for bulk load benchmark
+        let db = manifold::column_family::ColumnFamilyDatabase::builder()
+            .without_wal()
+            .open(tmpfile.path())
             .unwrap();
-        let table = RedbBenchDatabase::new(&mut db);
+        // Create a single column family for single-database comparison
+        db.create_column_family("default", None).unwrap();
+        let cf = Arc::new(db.column_family("default").unwrap());
+        let table = ManifoldCFBenchDatabase::new(cf);
         benchmark(table, tmpfile.path())
     };
 
@@ -105,12 +111,12 @@ fn main() {
 
     let mut rows = Vec::new();
 
-    for (benchmark, _duration) in &redb_results {
+    for (benchmark, _duration) in &manifold_results {
         rows.push(vec![benchmark.to_string()]);
     }
 
     let results = [
-        redb_results,
+        manifold_results,
         lmdb_results,
         rocksdb_results,
         sled_results,
@@ -146,7 +152,7 @@ fn main() {
     let mut table = comfy_table::Table::new();
     table.load_preset(comfy_table::presets::ASCII_MARKDOWN);
     table.set_width(100);
-    table.set_header(["", "redb", "lmdb", "rocksdb", "sled", "fjall", "sqlite"]);
+    table.set_header(["", "manifold", "lmdb", "rocksdb", "sled", "fjall", "sqlite"]);
     for row in rows {
         table.add_row(row);
     }

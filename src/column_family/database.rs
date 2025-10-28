@@ -1154,6 +1154,24 @@ impl ColumnFamily {
 
 impl Drop for ColumnFamilyDatabase {
     fn drop(&mut self) {
+        // Run final checkpoint to flush dirty data if WAL is enabled
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.wal_journal.is_some() {
+            // Checkpoint all column families to persist dirty data
+            for cf_name in self.list_column_families() {
+                if let Ok(cf) = self.column_family(&cf_name) {
+                    if let Ok(db) = cf.ensure_database() {
+                        let mem = db.get_memory();
+                        if let Ok((data_root, system_root, txn_id)) =
+                            mem.get_current_secondary_state()
+                        {
+                            let _ = mem.checkpoint_commit(data_root, system_root, txn_id);
+                        }
+                    }
+                }
+            }
+        }
+
         // Shutdown checkpoint manager if it exists (native platforms only)
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(checkpoint_mgr) = self.checkpoint_manager.take() {

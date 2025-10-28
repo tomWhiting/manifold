@@ -1,4 +1,5 @@
 use heed::{CompactionOption, EnvFlags, EnvInfo, FlagSetMode};
+use manifold::column_family::ColumnFamily;
 use manifold::{AccessGuard, Durability, ReadableDatabase, ReadableTableMetadata, TableDefinition};
 use rocksdb::{
     Direction, IteratorMode, OptimisticTransactionDB, OptimisticTransactionOptions, WriteOptions,
@@ -653,6 +654,195 @@ impl BenchInserter for RedbBenchInserter<'_> {
 
     fn remove(&mut self, key: &[u8]) -> Result<(), ()> {
         self.table.remove(key).map(|_| ()).map_err(|_| ())
+    }
+}
+
+// Manifold ColumnFamily adapter for benchmarking
+pub struct ManifoldCFBenchDatabase {
+    cf: Arc<ColumnFamily>,
+}
+
+impl ManifoldCFBenchDatabase {
+    pub fn new(cf: Arc<ColumnFamily>) -> Self {
+        ManifoldCFBenchDatabase { cf }
+    }
+}
+
+impl BenchDatabase for ManifoldCFBenchDatabase {
+    type C<'db>
+        = ManifoldCFBenchDatabaseConnection
+    where
+        Self: 'db;
+
+    fn db_type_name() -> &'static str {
+        "manifold"
+    }
+
+    fn connect(&self) -> Self::C<'_> {
+        ManifoldCFBenchDatabaseConnection {
+            cf: Arc::clone(&self.cf),
+            sync: false,
+        }
+    }
+
+    fn compact(&mut self) -> bool {
+        // Column families don't have a direct compact API yet
+        // Compaction happens at the underlying Database level
+        false
+    }
+}
+
+pub struct ManifoldCFBenchDatabaseConnection {
+    cf: Arc<ColumnFamily>,
+    sync: bool,
+}
+
+impl BenchDatabaseConnection for ManifoldCFBenchDatabaseConnection {
+    type W<'db>
+        = ManifoldCFBenchWriteTransaction
+    where
+        Self: 'db;
+    type R<'db>
+        = ManifoldCFBenchReadTransaction
+    where
+        Self: 'db;
+
+    fn set_sync(&mut self, sync: bool) -> bool {
+        self.sync = sync;
+        true
+    }
+
+    fn write_transaction(&self) -> Self::W<'_> {
+        let txn = self.cf.begin_write().unwrap();
+        ManifoldCFBenchWriteTransaction {
+            txn: Some(txn),
+            sync: self.sync,
+        }
+    }
+
+    fn read_transaction(&self) -> Self::R<'_> {
+        let txn = self.cf.begin_read().unwrap();
+        ManifoldCFBenchReadTransaction { txn: Some(txn) }
+    }
+}
+
+pub struct ManifoldCFBenchWriteTransaction {
+    txn: Option<manifold::WriteTransaction>,
+    sync: bool,
+}
+
+impl BenchWriteTransaction for ManifoldCFBenchWriteTransaction {
+    type W<'txn>
+        = ManifoldCFBenchInserter<'txn>
+    where
+        Self: 'txn;
+
+    fn get_inserter(&mut self) -> Self::W<'_> {
+        let table = self.txn.as_ref().unwrap().open_table(X).unwrap();
+        ManifoldCFBenchInserter { table: Some(table) }
+    }
+
+    fn commit(mut self) -> Result<(), ()> {
+        let mut txn = self.txn.take().unwrap();
+        if !self.sync {
+            txn.set_durability(Durability::None).unwrap();
+        }
+        txn.commit().unwrap();
+        Ok(())
+    }
+}
+
+pub struct ManifoldCFBenchInserter<'txn> {
+    table: Option<manifold::Table<'txn, &'static [u8], &'static [u8]>>,
+}
+
+impl BenchInserter for ManifoldCFBenchInserter<'_> {
+    fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), ()> {
+        self.table.as_mut().unwrap().insert(key, value).unwrap();
+        Ok(())
+    }
+
+    fn remove(&mut self, key: &[u8]) -> Result<(), ()> {
+        self.table.as_mut().unwrap().remove(key).unwrap();
+        Ok(())
+    }
+}
+
+pub struct ManifoldCFBenchReadTransaction {
+    txn: Option<manifold::ReadTransaction>,
+}
+
+impl BenchReadTransaction for ManifoldCFBenchReadTransaction {
+    type T<'txn>
+        = ManifoldCFBenchReader
+    where
+        Self: 'txn;
+
+    fn get_reader(&self) -> Self::T<'_> {
+        let table = self.txn.as_ref().unwrap().open_table(X).unwrap();
+        ManifoldCFBenchReader { table }
+    }
+}
+
+pub struct ManifoldCFBenchReader {
+    table: manifold::ReadOnlyTable<&'static [u8], &'static [u8]>,
+}
+
+impl BenchReader for ManifoldCFBenchReader {
+    type Output<'out>
+        = ManifoldCFAccessGuard<'out>
+    where
+        Self: 'out;
+    type Iterator<'out>
+        = ManifoldCFBenchIterator<'out>
+    where
+        Self: 'out;
+
+    fn get<'a>(&'a self, key: &[u8]) -> Option<Self::Output<'a>> {
+        self.table.get(key).unwrap().map(ManifoldCFAccessGuard::new)
+    }
+
+    fn range_from<'a>(&'a self, key: &'a [u8]) -> Self::Iterator<'a> {
+        let iter = self.table.range(key..).unwrap();
+        ManifoldCFBenchIterator { iter }
+    }
+
+    fn len(&self) -> u64 {
+        self.table.len().unwrap()
+    }
+}
+
+pub struct ManifoldCFBenchIterator<'a> {
+    iter: manifold::Range<'a, &'static [u8], &'static [u8]>,
+}
+
+impl BenchIterator for ManifoldCFBenchIterator<'_> {
+    type Output<'a>
+        = ManifoldCFAccessGuard<'a>
+    where
+        Self: 'a;
+
+    fn next(&mut self) -> Option<(Self::Output<'_>, Self::Output<'_>)> {
+        self.iter.next().map(|item| {
+            let (k, v) = item.unwrap();
+            (ManifoldCFAccessGuard::new(k), ManifoldCFAccessGuard::new(v))
+        })
+    }
+}
+
+pub struct ManifoldCFAccessGuard<'a> {
+    inner: AccessGuard<'a, &'static [u8]>,
+}
+
+impl<'a> ManifoldCFAccessGuard<'a> {
+    fn new(inner: AccessGuard<'a, &'static [u8]>) -> Self {
+        Self { inner }
+    }
+}
+
+impl AsRef<[u8]> for ManifoldCFAccessGuard<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.inner.value()
     }
 }
 

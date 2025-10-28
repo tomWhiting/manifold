@@ -831,6 +831,18 @@ impl WriteTransaction {
         self.checkpoint_manager = checkpoint_manager;
     }
 
+    /// Disable WAL for this specific transaction.
+    ///
+    /// This is useful for bulk load operations where WAL overhead provides no benefit.
+    /// When WAL is disabled for a transaction, it will use a direct durable commit instead.
+    ///
+    /// **Important**: Only use this for large bulk operations. For normal operations,
+    /// WAL provides better performance through group commit batching.
+    pub fn disable_wal(&mut self) {
+        self.wal_journal = None;
+        self.checkpoint_manager = None;
+    }
+
     pub(crate) fn pending_free_pages(&self) -> Result<bool> {
         let mut system_tables = self.system_tables.lock().unwrap();
         if system_tables
