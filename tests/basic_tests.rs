@@ -2015,3 +2015,126 @@ fn u8_array_serialization() {
         assert_eq!(ref_order, generic_order);
     }
 }
+
+#[test]
+fn bulk_insert_sorted() {
+    let tmpfile = create_tempfile();
+    let db = Database::create(tmpfile.path()).unwrap();
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(U64_TABLE).unwrap();
+        
+        // Generate sorted data
+        let data: Vec<(u64, u64)> = (0..1000).map(|i| (i, i * 2)).collect();
+        
+        let count = table.insert_bulk(data.into_iter(), true).unwrap();
+        assert_eq!(count, 1000);
+        
+        // Verify all items were inserted
+        assert_eq!(table.len().unwrap(), 1000);
+        assert_eq!(table.get(&500).unwrap().unwrap().value(), 1000);
+    }
+    txn.commit().unwrap();
+}
+
+#[test]
+fn bulk_insert_unsorted() {
+    let tmpfile = create_tempfile();
+    let db = Database::create(tmpfile.path()).unwrap();
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(U64_TABLE).unwrap();
+        
+        // Generate unsorted data
+        let data: Vec<(u64, u64)> = vec![
+            (5, 10), (2, 4), (8, 16), (1, 2), (9, 18),
+            (3, 6), (7, 14), (4, 8), (6, 12), (0, 0),
+        ];
+        
+        let count = table.insert_bulk(data.into_iter(), false).unwrap();
+        assert_eq!(count, 10);
+        
+        // Verify all items were inserted
+        assert_eq!(table.len().unwrap(), 10);
+        assert_eq!(table.get(&5).unwrap().unwrap().value(), 10);
+        assert_eq!(table.get(&2).unwrap().unwrap().value(), 4);
+    }
+    txn.commit().unwrap();
+}
+
+#[test]
+fn bulk_insert_large_unsorted() {
+    let tmpfile = create_tempfile();
+    let db = Database::create(tmpfile.path()).unwrap();
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(U64_TABLE).unwrap();
+        
+        // Generate large unsorted dataset that will require multiple chunks
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let data: Vec<(u64, u64)> = (0..25000)
+            .map(|_| {
+                let key = rng.random_range(0..100000);
+                (key, key * 2)
+            })
+            .collect();
+        
+        let count = table.insert_bulk(data.into_iter(), false).unwrap();
+        assert_eq!(count, 25000);
+        
+        // Verify data is accessible
+        assert!(table.len().unwrap() <= 25000); // May be less due to duplicates
+    }
+    txn.commit().unwrap();
+}
+
+#[test]
+fn bulk_remove() {
+    let tmpfile = create_tempfile();
+    let db = Database::create(tmpfile.path()).unwrap();
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(U64_TABLE).unwrap();
+        
+        // Insert some data first
+        for i in 0..100 {
+            table.insert(&i, &(i * 2)).unwrap();
+        }
+        assert_eq!(table.len().unwrap(), 100);
+        
+        // Bulk remove half of them
+        let keys_to_remove: Vec<u64> = (0..50).collect();
+        let removed_count = table.remove_bulk(keys_to_remove.into_iter()).unwrap();
+        assert_eq!(removed_count, 50);
+        
+        // Verify correct items were removed
+        assert_eq!(table.len().unwrap(), 50);
+        assert!(table.get(&25).unwrap().is_none());
+        assert!(table.get(&75).unwrap().is_some());
+    }
+    txn.commit().unwrap();
+}
+
+#[test]
+fn bulk_remove_nonexistent() {
+    let tmpfile = create_tempfile();
+    let db = Database::create(tmpfile.path()).unwrap();
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(U64_TABLE).unwrap();
+        
+        // Insert some data
+        for i in 0..50 {
+            table.insert(&i, &(i * 2)).unwrap();
+        }
+        
+        // Try to remove some existing and some non-existent keys
+        let keys_to_remove: Vec<u64> = (25..75).collect(); // 25-49 exist, 50-74 don't
+        let removed_count = table.remove_bulk(keys_to_remove.into_iter()).unwrap();
+        assert_eq!(removed_count, 25); // Only 25 actually existed
+        
+        assert_eq!(table.len().unwrap(), 25); // 0-24 remain
+    }
+    txn.commit().unwrap();
+}

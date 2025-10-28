@@ -103,10 +103,14 @@ pub fn benchmark<T: BenchDatabase + Send + Sync>(
     let mut txn = connection.write_transaction();
     let mut inserter = txn.get_inserter();
     {
+        // Collect items for bulk insert
+        let mut items = Vec::with_capacity(BULK_ELEMENTS);
         for _ in 0..BULK_ELEMENTS {
             let (key, value) = random_pair(&mut rng);
-            inserter.insert(&key, &value).unwrap();
+            items.push((key.to_vec(), value));
         }
+        // Use bulk insert API (falls back to individual inserts for databases that don't support it)
+        inserter.insert_bulk(items).unwrap();
     }
     drop(inserter);
     txn.commit().unwrap();
@@ -151,10 +155,14 @@ pub fn benchmark<T: BenchDatabase + Send + Sync>(
         for _ in 0..BATCH_WRITES {
             let mut txn = connection.write_transaction();
             let mut inserter = txn.get_inserter();
+            // Collect batch items for bulk insert
+            let mut items = Vec::with_capacity(BATCH_SIZE);
             for _ in 0..BATCH_SIZE {
                 let (key, value) = random_pair(&mut rng);
-                inserter.insert(&key, &value).unwrap();
+                items.push((key.to_vec(), value));
             }
+            // Use bulk insert API for batch
+            inserter.insert_bulk(items).unwrap();
             drop(inserter);
             txn.commit().unwrap();
         }
@@ -443,6 +451,27 @@ pub trait BenchInserter {
 
     #[allow(clippy::result_unit_err)]
     fn remove(&mut self, key: &[u8]) -> Result<(), ()>;
+
+    /// Bulk insert optimization - default implementation falls back to individual inserts
+    #[allow(clippy::result_unit_err)]
+    fn insert_bulk(&mut self, items: Vec<(Vec<u8>, Vec<u8>)>) -> Result<usize, ()> {
+        let count = items.len();
+        for (key, value) in items {
+            self.insert(&key, &value)?;
+        }
+        Ok(count)
+    }
+
+    /// Bulk remove optimization - default implementation falls back to individual removes
+    #[allow(clippy::result_unit_err)]
+    fn remove_bulk(&mut self, keys: Vec<Vec<u8>>) -> Result<usize, ()> {
+        let mut removed = 0;
+        for key in keys {
+            self.remove(&key)?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
 }
 
 pub trait BenchReadTransaction {
@@ -765,6 +794,37 @@ impl BenchInserter for ManifoldCFBenchInserter<'_> {
     fn remove(&mut self, key: &[u8]) -> Result<(), ()> {
         self.table.as_mut().unwrap().remove(key).unwrap();
         Ok(())
+    }
+
+    fn insert_bulk(&mut self, items: Vec<(Vec<u8>, Vec<u8>)>) -> Result<usize, ()> {
+        // Use manifold's optimized bulk insert API
+        // Convert Vec to references by iterating over references
+        let items_refs: Vec<(&[u8], &[u8])> = items
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+
+        let count = self
+            .table
+            .as_mut()
+            .unwrap()
+            .insert_bulk(items_refs.into_iter(), false)
+            .unwrap();
+        Ok(count)
+    }
+
+    fn remove_bulk(&mut self, keys: Vec<Vec<u8>>) -> Result<usize, ()> {
+        // Use manifold's optimized bulk remove API
+        // Convert Vec to references by iterating over references
+        let keys_refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
+
+        let count = self
+            .table
+            .as_mut()
+            .unwrap()
+            .remove_bulk(keys_refs.into_iter())
+            .unwrap();
+        Ok(count)
     }
 }
 
