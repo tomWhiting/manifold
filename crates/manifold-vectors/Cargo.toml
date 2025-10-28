@@ -1,0 +1,26 @@
+[package]
+name = "manifold-vectors"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Vector storage optimizations for Manifold embedded database"
+keywords = ["database", "vector", "embedding", "ml", "ai"]
+categories = ["database-implementations", "data-structures"]
+
+[dependencies]
+manifold = { path = "../..", version = "3.1" }
+
+[dev-dependencies]
+tempfile = "3.5.0"
+rand = "0.9"
+tessera-embeddings = { version = "0.1", features = ["metal"] }
+anyhow = "1.0.100"
+
+[lints.clippy]
+big_endian_bytes = "deny"
+dbg_macro = "deny"
+host_endian_bytes = "deny"

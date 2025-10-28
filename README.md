@@ -7,7 +7,7 @@
 
 Manifold is a fork of [redb](https://github.com/cberner/redb) by Christopher Berner, extended with:
 - **Column families** for concurrent writes to independent databases in a single file
-- **Write-ahead log (WAL)** for fast, durable commits (~200-250x faster than full B-tree sync)
+- **Write-ahead log (WAL)** for fast, durable commits
 - **WASM support** via Origin Private File System (OPFS)
 - **Production-ready crash recovery** with comprehensive error handling
 
@@ -53,7 +53,7 @@ const PRODUCTS: TableDefinition<u64, &str> = TableDefinition::new("products");
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Single file, multiple independent databases
     let db = ColumnFamilyDatabase::builder().open("app.manifold")?;
-    
+
     // Auto-create column families on first access
     let users_cf = db.column_family_or_create("users")?;
     let products_cf = db.column_family_or_create("products")?;
@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Performance
 
-### Manifold vs Vanilla redb 2.6.0
+### Manifold vs Vanilla redb 3.1.0
 
 **Concurrent Writes** (the killer feature):
 
@@ -131,24 +131,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Comparison vs Other Databases
 
-|                           | manifold  | lmdb        | rocksdb        | sled     | fjall       | sqlite     |
-|---------------------------|-----------|-------------|----------------|----------|-------------|------------|
-| bulk load                 | 155557ms  | **10272ms** | 31044ms        | 39712ms  | 18735ms     | 33652ms    |
-| individual writes         | **656ms** | 14181ms     | 9892ms         | 6516ms   | 5148ms      | 692ms      |
-| batch writes              | 8466ms    | 5784ms      | **920ms**      | 1865ms   | 921ms       | 5657ms     |
-| nosync writes             | 11212ms   | 496972ms    | **286ms**      | 441ms    | 638ms       | 13247ms    |
-| len()                     | **0ms**   | **0ms**     | 1310ms         | 3610ms   | 2560ms      | 151ms      |
-| random reads              | 14547ms   | **1736ms**  | 4162ms         | 2100ms   | 4154ms      | 11062ms    |
-| random reads              | 1683ms    | **1594ms**  | 4103ms         | 2099ms   | 4133ms      | 10560ms    |
-| random range reads        | 1908ms    | **1017ms**  | 5031ms         | 3369ms   | 3940ms      | 23100ms    |
-| random range reads        | 1517ms    | **1041ms**  | 4999ms         | 3175ms   | 3948ms      | 17671ms    |
-| random reads (4 threads)  | 2678ms    | **1956ms**  | 8289ms         | 3007ms   | 5306ms      | 32132ms    |
-| random reads (8 threads)  | 1709ms    | **1026ms**  | 8768ms         | 1886ms   | 3211ms      | 44337ms    |
-| random reads (16 threads) | 1570ms    | **907ms**   | 8306ms         | 1640ms   | 2752ms      | 67058ms    |
-| random reads (32 threads) | 1545ms    | **858ms**   | 8255ms         | 1631ms   | 2577ms      | 78253ms    |
-| removals                  | 113442ms  | **7786ms**  | 15886ms        | 14162ms  | 7814ms      | 21423ms    |
-| uncompacted size          | 4.00 GiB  | 2.59 GiB    | **907.06 MiB** | 2.14 GiB | 1010.61 MiB | 1.10 GiB   |
-| compacted size            | 1.70 GiB  | 1.26 GiB    | **459.17 MiB** | N/A      | 1010.61 MiB | 562.31 MiB |
+|                           | manifold   | lmdb        | rocksdb        | sled       | fjall           | sqlite     |
+|---------------------------|------------|-------------|----------------|------------|-----------------|------------|
+| bulk load                 | 47912ms    | **10520ms** | 39093ms        | 41817ms    | 91075ms         | 55585ms    |
+| individual writes         | **51ms**   | 15753ms     | 20816ms        | 11038ms    | 5269ms          | 6803ms     |
+| batch writes              | 1782ms     | 6413ms      | 1355ms         | 2138ms     | **727ms**       | 90617ms    |
+| nosync writes             | 2483ms     | 591141ms    | **295ms**      | 463ms      | 853ms           | 283065ms   |
+| len()                     | **0ms**    | **0ms**     | 1413ms         | 3277ms     | 1525ms          | 66ms       |
+| random reads              | 2653ms     | **1874ms**  | 4202ms         | 2090ms     | 4540ms          | 10131ms    |
+| random reads              | 3097ms     | **1723ms**  | 4070ms         | 2185ms     | 4519ms          | 10382ms    |
+| random range reads        | 2229ms     | **1056ms**  | 5000ms         | 3310ms     | 4148ms          | 19729ms    |
+| random range reads        | 2051ms     | **1057ms**  | 5753ms         | 3450ms     | 4146ms          | 19330ms    |
+| random reads (4 threads)  | 4319ms     | **2059ms**  | 9234ms         | 3280ms     | 5785ms          | 39302ms    |
+| random reads (8 threads)  | 3432ms     | **1207ms**  | 9117ms         | 2126ms     | 3329ms          | 47882ms    |
+| random reads (16 threads) | 2838ms     | **1093ms**  | 8066ms         | 2057ms     | 3321ms          | 66441ms    |
+| random reads (32 threads) | 2866ms     | **1128ms**  | 8173ms         | 2077ms     | 3471ms          | 78306ms    |
+| removals                  | 53881ms    | **7349ms**  | 20050ms        | 15326ms    | 8049ms          | 56281ms    |
+| uncompacted size          | 4.00 GiB   | 2.59 GiB    | 1016.07 MiB    | 2.14 GiB   | **1010.61 MiB** | 1.10 GiB   |
+| compacted size            | N/A        | 1.26 GiB    | **459.17 MiB** | N/A        | 1010.61 MiB     | 562.31 MiB |
 
 Source code for benchmark: [lmdb_benchmark.rs](./crates/manifold-bench/benches/lmdb_benchmark.rs). Results collected on macOS.
 
@@ -263,7 +263,7 @@ const cf = db.column_family_or_create("users");
 // Write data
 cf.write("user_1", "alice");
 
-// Read data  
+// Read data
 const value = cf.read("user_1");
 console.log(value); // "alice"
 ```

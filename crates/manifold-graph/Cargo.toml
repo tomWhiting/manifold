@@ -1,0 +1,23 @@
+[package]
+name = "manifold-graph"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Graph storage optimizations for Manifold embedded database"
+keywords = ["database", "graph", "edges", "vertices", "network"]
+categories = ["database-implementations", "data-structures"]
+
+[dependencies]
+manifold = { path = "../..", version = "3.1" }
+
+[dev-dependencies]
+tempfile = "3.5.0"
+
+[lints.clippy]
+big_endian_bytes = "deny"
+dbg_macro = "deny"
+host_endian_bytes = "deny"

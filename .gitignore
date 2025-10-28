@@ -27,3 +27,6 @@ flamegraph.svg
 
 **/*.redb
 **/*.manifold
+
+# OS
+.DS_Store

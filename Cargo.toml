@@ -12,7 +12,15 @@ repository.workspace = true
 authors.workspace = true
 
 [workspace]
-members = [".", "crates/manifold-bench", "crates/manifold-derive", "crates/manifold-python"]
+members = [
+    ".",
+    "crates/manifold-bench",
+    "crates/manifold-derive",
+    "crates/manifold-python",
+    "crates/manifold-vectors",
+    "crates/manifold-graph",
+    "crates/manifold-timeseries",
+]
 default-members = [".", "crates/manifold-derive"]
 
 [workspace.package]
