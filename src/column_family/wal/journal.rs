@@ -12,13 +12,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// Magic number for WAL file identification.
-const WAL_MAGIC: &[u8; 8] = b"REDB-WAL";
+pub(crate) const WAL_MAGIC: &[u8; 8] = b"REDB-WAL";
 
 /// Current WAL format version.
-const WAL_VERSION: u8 = 1;
+pub(crate) const WAL_VERSION: u8 = 1;
 
 /// Size of the WAL file header in bytes.
-const WAL_HEADER_SIZE: usize = 512;
+pub(crate) const WAL_HEADER_SIZE: usize = 512;
 
 /// Batching window for leader-based group commit (microseconds)
 /// Leader spins for this duration to collect additional transactions before fsync
@@ -61,7 +61,7 @@ pub(crate) struct WALHeader {
 }
 
 impl WALHeader {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             magic: *WAL_MAGIC,
             version: WAL_VERSION,
@@ -70,7 +70,7 @@ impl WALHeader {
         }
     }
 
-    fn to_bytes(&self) -> [u8; WAL_HEADER_SIZE] {
+    pub(crate) fn to_bytes(&self) -> [u8; WAL_HEADER_SIZE] {
         let mut buf = [0u8; WAL_HEADER_SIZE];
 
         buf[0..8].copy_from_slice(&self.magic);
@@ -86,7 +86,7 @@ impl WALHeader {
         buf
     }
 
-    fn from_bytes(buf: &[u8; WAL_HEADER_SIZE]) -> io::Result<Self> {
+    pub(crate) fn from_bytes(buf: &[u8; WAL_HEADER_SIZE]) -> io::Result<Self> {
         let mut magic = [0u8; 8];
         magic.copy_from_slice(&buf[0..8]);
 
