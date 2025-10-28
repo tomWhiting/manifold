@@ -16,6 +16,7 @@ manifold = { path = "../..", version = "3.1" }
 
 [dev-dependencies]
 tempfile = "3.5.0"
+sysinfo = "0.37"
 
 [lints.clippy]
 big_endian_bytes = "deny"
