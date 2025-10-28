@@ -6,6 +6,7 @@
 // - Background checkpointing to apply WAL entries to main database
 // - 200-250x performance improvement over default durability
 
+pub mod async_journal;
 pub mod checkpoint;
 pub mod config;
 pub mod entry;

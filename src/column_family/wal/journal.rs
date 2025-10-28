@@ -330,10 +330,20 @@ impl WALJournal {
 
     /// Reads all entries with sequence numbers >= `start_seq`.
     pub(crate) fn read_from(&self, start_seq: u64) -> io::Result<Vec<WALEntry>> {
+        Self::read_entries_from_backend(&self.backend, start_seq)
+    }
+
+    /// Helper method to read entries from a backend (used by both sync and async journals).
+    ///
+    /// This is a static method so it can be called by AsyncWALJournal.
+    pub(crate) fn read_entries_from_backend(
+        backend: &Arc<dyn StorageBackend>,
+        start_seq: u64,
+    ) -> io::Result<Vec<WALEntry>> {
         // Note: We don't check header.latest_seq here because append() doesn't update
         // the header (for performance). Instead, we scan the backend until EOF.
 
-        let backend_len = self.backend.len()?;
+        let backend_len = backend.len()?;
         let mut offset = WAL_HEADER_SIZE as u64;
         let mut entries = Vec::new();
 
@@ -343,7 +353,7 @@ impl WALJournal {
             if offset + 4 > backend_len {
                 break; // Not enough data for length header
             }
-            self.backend.read(offset, &mut len_buf)?;
+            backend.read(offset, &mut len_buf)?;
             offset += 4;
 
             let total_len = u32::from_le_bytes(len_buf) as usize;
@@ -358,12 +368,12 @@ impl WALJournal {
 
             // Read entry data
             let mut entry_data = vec![0u8; data_len];
-            self.backend.read(offset, &mut entry_data)?;
+            backend.read(offset, &mut entry_data)?;
             offset += data_len as u64;
 
             // Read CRC
             let mut crc_buf = [0u8; 4];
-            self.backend.read(offset, &mut crc_buf)?;
+            backend.read(offset, &mut crc_buf)?;
             offset += 4;
 
             let stored_crc = u32::from_le_bytes(crc_buf);
