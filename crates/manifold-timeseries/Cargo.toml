@@ -19,6 +19,6 @@ tempfile = "3.5.0"
 sysinfo = "0.37"
 
 [lints.clippy]
-big_endian_bytes = "deny"
+big_endian_bytes = "allow"
 dbg_macro = "deny"
 host_endian_bytes = "deny"

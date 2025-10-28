@@ -21,7 +21,7 @@ use crate::{
 use super::builder::ColumnFamilyDatabaseBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use super::file_handle_pool::FileHandlePool;
-use super::header::{ColumnFamilyMetadata, FreeSegment, MasterHeader, PAGE_SIZE, Segment};
+use super::header::{ColumnFamilyMetadata, FreeSegment, MasterHeader, Segment, PAGE_SIZE};
 use super::partitioned_backend::PartitionedStorageBackend;
 use super::state::ColumnFamilyState;
 use super::wal::checkpoint::CheckpointManager;
@@ -1159,14 +1159,13 @@ impl Drop for ColumnFamilyDatabase {
         if self.wal_journal.is_some() {
             // Checkpoint all column families to persist dirty data
             for cf_name in self.list_column_families() {
-                if let Ok(cf) = self.column_family(&cf_name) {
-                    if let Ok(db) = cf.ensure_database() {
-                        let mem = db.get_memory();
-                        if let Ok((data_root, system_root, txn_id)) =
-                            mem.get_current_secondary_state()
-                        {
-                            let _ = mem.checkpoint_commit(data_root, system_root, txn_id);
-                        }
+                if let Ok(cf) = self.column_family(&cf_name)
+                    && let Ok(db) = cf.ensure_database()
+                {
+                    let mem = db.get_memory();
+                    if let Ok((data_root, system_root, txn_id)) = mem.get_current_secondary_state()
+                    {
+                        let _ = mem.checkpoint_commit(data_root, system_root, txn_id);
                     }
                 }
             }

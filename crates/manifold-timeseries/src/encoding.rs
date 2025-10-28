@@ -1,5 +1,6 @@
 //! Timestamp encoding strategies for time series keys.
 
+use std::fmt;
 use std::io;
 
 /// Error type for encoding/decoding operations.
@@ -11,11 +12,11 @@ pub enum EncodingError {
     Io(io::Error),
 }
 
-impl std::fmt::Display for EncodingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for EncodingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidData(msg) => write!(f, "Invalid encoded data: {}", msg),
-            Self::Io(err) => write!(f, "IO error: {}", err),
+            Self::InvalidData(msg) => write!(f, "Invalid encoded data: {msg}"),
+            Self::Io(err) => write!(f, "IO error: {err}"),
         }
     }
 }
@@ -36,10 +37,10 @@ impl From<io::Error> for EncodingError {
 pub trait TimestampEncoding: Send + Sync {
     /// Encodes a timestamp (milliseconds since epoch) into a sortable byte representation.
     fn encode(timestamp: u64) -> Vec<u8>;
-    
+
     /// Decodes a timestamp from its byte representation.
     fn decode(bytes: &[u8]) -> Result<u64, EncodingError>;
-    
+
     /// Returns true if this encoding supports direct seeking to arbitrary timestamps.
     fn supports_random_access() -> bool;
 }
@@ -63,7 +64,7 @@ impl TimestampEncoding for AbsoluteEncoding {
     fn encode(timestamp: u64) -> Vec<u8> {
         timestamp.to_be_bytes().to_vec()
     }
-    
+
     fn decode(bytes: &[u8]) -> Result<u64, EncodingError> {
         if bytes.len() != 8 {
             return Err(EncodingError::InvalidData(format!(
@@ -76,7 +77,7 @@ impl TimestampEncoding for AbsoluteEncoding {
         })?;
         Ok(u64::from_be_bytes(array))
     }
-    
+
     fn supports_random_access() -> bool {
         true
     }
@@ -95,7 +96,7 @@ impl TimestampEncoding for AbsoluteEncoding {
 /// - Requires checkpoint lookup for range queries
 ///
 /// **Best for:**
-/// - Dense, regular-interval data (e.g., 1-second IoT sensors)
+/// - Dense, regular-interval data (e.g., 1-second `IoT` sensors)
 /// - Storage-constrained environments
 /// - Sequential scan workloads
 ///
@@ -110,6 +111,7 @@ pub const DELTA_CHECKPOINT_INTERVAL: usize = 1000;
 
 impl DeltaEncoding {
     /// Encodes a delta using unsigned varint encoding.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn encode_varint(value: u64, buf: &mut Vec<u8>) {
         let mut n = value;
         while n >= 0x80 {
@@ -118,32 +120,28 @@ impl DeltaEncoding {
         }
         buf.push(n as u8);
     }
-    
-    /// Decodes a varint from bytes, returning (value, bytes_consumed).
+
+    /// Decodes a varint from bytes, returning (`value`, `bytes_consumed`).
     pub fn decode_varint(bytes: &[u8]) -> Result<(u64, usize), EncodingError> {
         let mut result: u64 = 0;
         let mut shift: u32 = 0;
-        
+
         for (i, &byte) in bytes.iter().enumerate() {
             if shift >= 64 {
-                return Err(EncodingError::InvalidData(
-                    "Varint overflow".to_string()
-                ));
+                return Err(EncodingError::InvalidData("Varint overflow".to_string()));
             }
-            
+
             let value = u64::from(byte & 0x7F);
             result |= value << shift;
-            
+
             if (byte & 0x80) == 0 {
                 return Ok((result, i + 1));
             }
-            
+
             shift += 7;
         }
-        
-        Err(EncodingError::InvalidData(
-            "Incomplete varint".to_string()
-        ))
+
+        Err(EncodingError::InvalidData("Incomplete varint".to_string()))
     }
 }
 
@@ -154,7 +152,7 @@ impl TimestampEncoding for DeltaEncoding {
         // but we need to support the trait interface
         timestamp.to_be_bytes().to_vec()
     }
-    
+
     fn decode(bytes: &[u8]) -> Result<u64, EncodingError> {
         if bytes.len() != 8 {
             return Err(EncodingError::InvalidData(format!(
@@ -167,7 +165,7 @@ impl TimestampEncoding for DeltaEncoding {
         })?;
         Ok(u64::from_be_bytes(array))
     }
-    
+
     fn supports_random_access() -> bool {
         // Delta encoding requires checkpoint lookup, not true random access
         false
@@ -181,10 +179,10 @@ mod tests {
     #[test]
     fn test_absolute_encoding() {
         let timestamp = 1_609_459_200_000u64; // 2021-01-01 00:00:00 UTC in milliseconds
-        
+
         let encoded = AbsoluteEncoding::encode(timestamp);
         assert_eq!(encoded.len(), 8);
-        
+
         let decoded = AbsoluteEncoding::decode(&encoded).unwrap();
         assert_eq!(decoded, timestamp);
     }
@@ -194,11 +192,11 @@ mod tests {
         let ts1 = 1_000_000_000u64;
         let ts2 = 2_000_000_000u64;
         let ts3 = 3_000_000_000u64;
-        
+
         let enc1 = AbsoluteEncoding::encode(ts1);
         let enc2 = AbsoluteEncoding::encode(ts2);
         let enc3 = AbsoluteEncoding::encode(ts3);
-        
+
         // Lexicographic ordering should match timestamp ordering
         assert!(enc1 < enc2);
         assert!(enc2 < enc3);
@@ -214,10 +212,10 @@ mod tests {
     #[test]
     fn test_delta_encoding_basic() {
         let timestamp = 1_609_459_200_000u64;
-        
+
         let encoded = DeltaEncoding::encode(timestamp);
         assert_eq!(encoded.len(), 8);
-        
+
         let decoded = DeltaEncoding::decode(&encoded).unwrap();
         assert_eq!(decoded, timestamp);
     }
@@ -235,7 +233,7 @@ mod tests {
             268_435_455,
             268_435_456,
         ];
-        
+
         for value in test_cases {
             let mut buf = Vec::new();
             DeltaEncoding::encode_varint(value, &mut buf);

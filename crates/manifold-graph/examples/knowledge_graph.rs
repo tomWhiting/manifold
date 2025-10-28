@@ -110,59 +110,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let history = Entity::genre("Historical");
     let war = Entity::genre("War");
 
-    let entities = vec![
-        &nolan, &cillian, &emily, &rdj, &matt, &florence,
-        &oppenheimer, &inception, &interstellar, &dunkirk,
-        &universal, &warner, &syncopy,
-        &drama, &scifi, &thriller, &history, &war,
+    let entities = [
+        &nolan,
+        &cillian,
+        &emily,
+        &rdj,
+        &matt,
+        &florence,
+        &oppenheimer,
+        &inception,
+        &interstellar,
+        &dunkirk,
+        &universal,
+        &warner,
+        &syncopy,
+        &drama,
+        &scifi,
+        &thriller,
+        &history,
+        &war,
     ];
 
     // Build knowledge graph with batch insertion
-    println!("Building knowledge graph with {} entities...", entities.len());
+    println!(
+        "Building knowledge graph with {} entities...",
+        entities.len()
+    );
     {
         let write_txn = cf.begin_write()?;
         let mut graph = GraphTable::open(&write_txn, "knowledge")?;
 
-        let mut relationships = vec![];
+        #[allow(clippy::vec_init_then_push)]
+        let relationships = {
+            let mut relationships = vec![];
 
-        // Oppenheimer relationships
-        relationships.push((nolan.id(), "directed", oppenheimer.id(), true, 1.0));
-        relationships.push((cillian.id(), "acted_in", oppenheimer.id(), true, 1.0));
-        relationships.push((emily.id(), "acted_in", oppenheimer.id(), true, 0.9));
-        relationships.push((rdj.id(), "acted_in", oppenheimer.id(), true, 0.95));
-        relationships.push((matt.id(), "acted_in", oppenheimer.id(), true, 0.7));
-        relationships.push((florence.id(), "acted_in", oppenheimer.id(), true, 0.8));
-        relationships.push((oppenheimer.id(), "produced_by", universal.id(), true, 1.0));
-        relationships.push((oppenheimer.id(), "produced_by", syncopy.id(), true, 1.0));
-        relationships.push((oppenheimer.id(), "genre_of", drama.id(), true, 1.0));
-        relationships.push((oppenheimer.id(), "genre_of", history.id(), true, 1.0));
-        relationships.push((oppenheimer.id(), "genre_of", thriller.id(), true, 0.8));
+            // Oppenheimer relationships
+            relationships.push((nolan.id(), "directed", oppenheimer.id(), true, 1.0));
+            relationships.push((cillian.id(), "acted_in", oppenheimer.id(), true, 1.0));
+            relationships.push((emily.id(), "acted_in", oppenheimer.id(), true, 0.9));
+            relationships.push((rdj.id(), "acted_in", oppenheimer.id(), true, 0.95));
+            relationships.push((matt.id(), "acted_in", oppenheimer.id(), true, 0.7));
+            relationships.push((florence.id(), "acted_in", oppenheimer.id(), true, 0.8));
+            relationships.push((oppenheimer.id(), "produced_by", universal.id(), true, 1.0));
+            relationships.push((oppenheimer.id(), "produced_by", syncopy.id(), true, 1.0));
+            relationships.push((oppenheimer.id(), "genre_of", drama.id(), true, 1.0));
+            relationships.push((oppenheimer.id(), "genre_of", history.id(), true, 1.0));
+            relationships.push((oppenheimer.id(), "genre_of", thriller.id(), true, 0.8));
 
-        // Inception relationships
-        relationships.push((nolan.id(), "directed", inception.id(), true, 1.0));
-        relationships.push((cillian.id(), "acted_in", inception.id(), true, 0.7));
-        relationships.push((inception.id(), "produced_by", warner.id(), true, 1.0));
-        relationships.push((inception.id(), "produced_by", syncopy.id(), true, 1.0));
-        relationships.push((inception.id(), "genre_of", scifi.id(), true, 1.0));
-        relationships.push((inception.id(), "genre_of", thriller.id(), true, 0.9));
+            // Inception relationships
+            relationships.push((nolan.id(), "directed", inception.id(), true, 1.0));
+            relationships.push((cillian.id(), "acted_in", inception.id(), true, 0.7));
+            relationships.push((inception.id(), "produced_by", warner.id(), true, 1.0));
+            relationships.push((inception.id(), "produced_by", syncopy.id(), true, 1.0));
+            relationships.push((inception.id(), "genre_of", scifi.id(), true, 1.0));
+            relationships.push((inception.id(), "genre_of", thriller.id(), true, 0.9));
 
-        // Interstellar relationships
-        relationships.push((nolan.id(), "directed", interstellar.id(), true, 1.0));
-        relationships.push((matt.id(), "acted_in", interstellar.id(), true, 1.0));
-        relationships.push((interstellar.id(), "produced_by", warner.id(), true, 1.0));
-        relationships.push((interstellar.id(), "produced_by", syncopy.id(), true, 1.0));
-        relationships.push((interstellar.id(), "genre_of", scifi.id(), true, 1.0));
-        relationships.push((interstellar.id(), "genre_of", drama.id(), true, 0.8));
+            // Interstellar relationships
+            relationships.push((nolan.id(), "directed", interstellar.id(), true, 1.0));
+            relationships.push((matt.id(), "acted_in", interstellar.id(), true, 1.0));
+            relationships.push((interstellar.id(), "produced_by", warner.id(), true, 1.0));
+            relationships.push((interstellar.id(), "produced_by", syncopy.id(), true, 1.0));
+            relationships.push((interstellar.id(), "genre_of", scifi.id(), true, 1.0));
+            relationships.push((interstellar.id(), "genre_of", drama.id(), true, 0.8));
 
-        // Dunkirk relationships
-        relationships.push((nolan.id(), "directed", dunkirk.id(), true, 1.0));
-        relationships.push((dunkirk.id(), "produced_by", warner.id(), true, 1.0));
-        relationships.push((dunkirk.id(), "produced_by", syncopy.id(), true, 1.0));
-        relationships.push((dunkirk.id(), "genre_of", war.id(), true, 1.0));
-        relationships.push((dunkirk.id(), "genre_of", history.id(), true, 1.0));
-        relationships.push((dunkirk.id(), "genre_of", thriller.id(), true, 0.7));
+            // Dunkirk relationships
+            relationships.push((nolan.id(), "directed", dunkirk.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "produced_by", warner.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "produced_by", syncopy.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "genre_of", war.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "genre_of", history.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "genre_of", thriller.id(), true, 0.7));
 
-        let count = graph.add_edges_batch(relationships, false)?;
+            relationships
+        };
+
+        let count = graph.add_edges_batch(&relationships, false)?;
         println!("Created {} relationships\n", count);
 
         drop(graph);
@@ -229,7 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if edge.edge_type == "acted_in" && edge.is_active {
                 actor_film_count
                     .entry(edge.source)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(film_id);
             }
         }
@@ -240,7 +262,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|(_, films)| films.len() > 1)
         .collect();
 
-    println!("Found {} frequent collaborators:", frequent_collaborators.len());
+    println!(
+        "Found {} frequent collaborators:",
+        frequent_collaborators.len()
+    );
     for (actor_id, film_ids) in &frequent_collaborators {
         let actor = entity_map[actor_id];
         println!("  {} - {} films:", actor.display(), film_ids.len());
@@ -344,12 +369,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Total relationships: {}", graph.len()?);
 
     let edge_types: HashSet<String> = graph
-        .iter()?
+        .all_edges()?
         .filter_map(|r| r.ok())
         .map(|e| e.edge_type.to_string())
         .collect();
     println!("  Relationship types: {}", edge_types.len());
-    println!("    Types: {}", edge_types.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+    println!(
+        "    Types: {}",
+        edge_types
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     println!();
     println!("─────────────────────────────────────────");

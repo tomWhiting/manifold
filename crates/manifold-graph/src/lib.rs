@@ -9,7 +9,7 @@
 //!
 //! - **Automatic bidirectional indexes**: Efficient queries for both outgoing and incoming edges
 //! - **UUID-based vertices**: Fixed-width 16-byte vertex IDs with proper ordering
-//! - **Type-safe edge properties**: Fixed-width `(bool, f32)` tuple for is_active and weight
+//! - **Type-safe edge properties**: Fixed-width `(bool, f32)` tuple for `is_active` and `weight`
 //! - **Atomic updates**: Both forward and reverse indexes updated in same transaction
 //! - **Efficient traversal**: Range scans leverage tuple key ordering for fast queries
 //!
@@ -57,7 +57,7 @@
 //!
 //! ## Architecture
 //!
-//! This crate does **not** implement graph algorithms (BFS, DFS, PageRank, etc.).
+//! This crate does **not** implement graph algorithms (BFS, DFS, `PageRank`, etc.).
 //! Instead, it focuses on efficient storage and provides integration traits for external
 //! graph libraries. The `EdgeSource` trait enables graph algorithm libraries to consume
 //! edges efficiently.

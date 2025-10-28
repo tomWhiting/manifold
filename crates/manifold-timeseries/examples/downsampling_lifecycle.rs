@@ -171,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut ts = TimeSeriesTable::<AbsoluteEncoding>::open(&write_txn, "cpu")?;
 
         // Delete raw data older than 1 hour from end
-        let cutoff = base_time + (1 * 60 * 60 * 1000);
+        let cutoff = base_time + (60 * 60 * 1000);
         let deleted = ts.delete_before(Granularity::Raw, cutoff)?;
 
         println!("Deleted {} old raw data points", deleted);

@@ -1,11 +1,11 @@
 //! Common distance and similarity functions for vectors.
 //!
 //! All functions work directly with slices, making them compatible with
-//! zero-copy VectorGuard types through deref coercion.
+//! zero-copy `VectorGuard` types through deref coercion.
 
 /// Computes the cosine similarity between two vectors
 ///
-/// Works with any slice type, including zero-copy VectorGuard.
+/// Works with any slice type, including zero-copy `VectorGuard`.
 #[inline]
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
@@ -18,12 +18,16 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
         norm_b += b[i] * b[i];
     }
     let mag = (norm_a * norm_b).sqrt();
-    if mag == 0.0 { 0.0 } else { dot / mag }
+    if mag == 0.0 {
+        0.0
+    } else {
+        dot / mag
+    }
 }
 
 /// Computes the Euclidean (L2) distance between two vectors
 ///
-/// Works with any slice type, including zero-copy VectorGuard.
+/// Works with any slice type, including zero-copy `VectorGuard`.
 #[inline]
 pub fn euclidean(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
@@ -37,8 +41,8 @@ pub fn euclidean(a: &[f32], b: &[f32]) -> f32 {
 
 /// Computes the squared Euclidean distance between two vectors
 ///
-/// Faster than euclidean() as it avoids the sqrt operation.
-/// Works with any slice type, including zero-copy VectorGuard.
+/// Faster than `euclidean()` as it avoids the sqrt operation.
+/// Works with any slice type, including zero-copy `VectorGuard`.
 #[inline]
 pub fn euclidean_squared(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
@@ -52,7 +56,7 @@ pub fn euclidean_squared(a: &[f32], b: &[f32]) -> f32 {
 
 /// Computes the dot product of two vectors
 ///
-/// Works with any slice type, including zero-copy VectorGuard.
+/// Works with any slice type, including zero-copy `VectorGuard`.
 #[inline]
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
@@ -65,7 +69,7 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 
 /// Computes the Manhattan (L1) distance between two vectors
 ///
-/// Works with any slice type, including zero-copy VectorGuard.
+/// Works with any slice type, including zero-copy `VectorGuard`.
 #[inline]
 pub fn manhattan(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());

@@ -83,6 +83,7 @@ impl Aggregate {
     /// Computes the average value.
     ///
     /// Returns `0.0` if count is zero.
+    #[allow(clippy::cast_precision_loss)]
     pub fn average(&self) -> f32 {
         if self.count == 0 {
             0.0
@@ -111,16 +112,15 @@ impl Value for Aggregate {
         Self: 'a,
     {
         assert_eq!(data.len(), 24, "Aggregate must be exactly 24 bytes");
-        
+
         let min = f32::from_be_bytes([data[0], data[1], data[2], data[3]]);
         let max = f32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         let sum = f32::from_be_bytes([data[8], data[9], data[10], data[11]]);
         let count = u64::from_be_bytes([
-            data[12], data[13], data[14], data[15],
-            data[16], data[17], data[18], data[19],
+            data[12], data[13], data[14], data[15], data[16], data[17], data[18], data[19],
         ]);
         let last = f32::from_be_bytes([data[20], data[21], data[22], data[23]]);
-        
+
         Self {
             min,
             max,
@@ -187,12 +187,11 @@ impl Granularity {
     /// For example, with `Granularity::Minute`, timestamp `1609459261500` (01:01:01.500)
     /// would be rounded down to `1609459260000` (01:01:00.000).
     pub fn round_down(&self, timestamp_ms: u64) -> u64 {
-        match self {
-            Self::Raw => timestamp_ms, // No rounding for raw data
-            _ => {
-                let duration = self.duration_ms();
-                (timestamp_ms / duration) * duration
-            }
+        if *self == Self::Raw {
+            timestamp_ms // No rounding for raw data
+        } else {
+            let duration = self.duration_ms();
+            (timestamp_ms / duration) * duration
         }
     }
 
@@ -201,12 +200,11 @@ impl Granularity {
     /// For example, with `Granularity::Minute`, timestamp `1609459261500` (01:01:01.500)
     /// would be rounded up to `1609459320000` (01:02:00.000).
     pub fn round_up(&self, timestamp_ms: u64) -> u64 {
-        match self {
-            Self::Raw => timestamp_ms, // No rounding for raw data
-            _ => {
-                let duration = self.duration_ms();
-                ((timestamp_ms + duration - 1) / duration) * duration
-            }
+        if *self == Self::Raw {
+            timestamp_ms // No rounding for raw data
+        } else {
+            let duration = self.duration_ms();
+            timestamp_ms.div_ceil(duration) * duration
         }
     }
 }
@@ -289,8 +287,8 @@ mod tests {
 
         assert_eq!(Granularity::Raw.round_down(ts), ts);
         assert_eq!(Granularity::Minute.round_down(ts), 1_609_459_260_000); // 00:01:00.000
-        assert_eq!(Granularity::Hour.round_down(ts), 1_609_459_200_000);   // 00:00:00.000
-        assert_eq!(Granularity::Day.round_down(ts), 1_609_459_200_000);    // 00:00:00.000
+        assert_eq!(Granularity::Hour.round_down(ts), 1_609_459_200_000); // 00:00:00.000
+        assert_eq!(Granularity::Day.round_down(ts), 1_609_459_200_000); // 00:00:00.000
     }
 
     #[test]
@@ -299,8 +297,8 @@ mod tests {
 
         assert_eq!(Granularity::Raw.round_up(ts), ts);
         assert_eq!(Granularity::Minute.round_up(ts), 1_609_459_320_000); // 00:02:00.000
-        assert_eq!(Granularity::Hour.round_up(ts), 1_609_462_800_000);   // 01:00:00.000
-        assert_eq!(Granularity::Day.round_up(ts), 1_609_545_600_000);    // Next day 00:00:00.000
+        assert_eq!(Granularity::Hour.round_up(ts), 1_609_462_800_000); // 01:00:00.000
+        assert_eq!(Granularity::Day.round_up(ts), 1_609_545_600_000); // Next day 00:00:00.000
     }
 
     #[test]

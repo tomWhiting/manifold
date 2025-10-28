@@ -1,14 +1,14 @@
 use crate::transaction_tracker::TransactionId;
 use crate::transactions::{AllocatorStateKey, AllocatorStateTree, AllocatorStateTreeMut};
 use crate::tree_store::btree_base::{BtreeHeader, Checksum};
-use crate::tree_store::page_store::base::{MAX_PAGE_INDEX, PageHint};
+use crate::tree_store::page_store::base::{PageHint, MAX_PAGE_INDEX};
 use crate::tree_store::page_store::buddy_allocator::BuddyAllocator;
 use crate::tree_store::page_store::cached_file::PagedCachedFile;
 use crate::tree_store::page_store::fast_hash::PageNumberHashSet;
-use crate::tree_store::page_store::header::{DB_HEADER_SIZE, DatabaseHeader, MAGICNUMBER};
+use crate::tree_store::page_store::header::{DatabaseHeader, DB_HEADER_SIZE, MAGICNUMBER};
 use crate::tree_store::page_store::layout::DatabaseLayout;
 use crate::tree_store::page_store::region::{Allocators, RegionTracker};
-use crate::tree_store::page_store::{PageImpl, PageMut, hash128_with_seed};
+use crate::tree_store::page_store::{hash128_with_seed, PageImpl, PageMut};
 use crate::tree_store::{Page, PageNumber, PageTrackerPolicy};
 use crate::{CacheStats, StorageBackend};
 use crate::{DatabaseError, Result, StorageError};
@@ -20,9 +20,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::io::ErrorKind;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 // The region header is optional in the v3 file format
@@ -309,9 +309,10 @@ impl TransactionalMemory {
     #[cfg(debug_assertions)]
     pub(crate) fn mark_debug_allocated_page(&self, page: PageNumber) {
         let mut allocated = self.allocated_pages.lock().unwrap();
-        if !allocated.insert(page) {
-            panic!("Page {page:?} already marked as allocated");
-        }
+        assert!(
+            allocated.insert(page),
+            "Page {page:?} already marked as allocated"
+        );
     }
 
     #[cfg(debug_assertions)]
@@ -912,13 +913,11 @@ impl TransactionalMemory {
     pub(crate) fn get_page_mut(&self, page_number: PageNumber) -> Result<PageMut> {
         #[cfg(debug_assertions)]
         {
-            assert!(
-                !self
-                    .read_page_ref_counts
-                    .lock()
-                    .unwrap()
-                    .contains_key(&page_number)
-            );
+            assert!(!self
+                .read_page_ref_counts
+                .lock()
+                .unwrap()
+                .contains_key(&page_number));
             assert!(!self.open_dirty_pages.lock().unwrap().contains(&page_number));
         }
 
@@ -1013,13 +1012,11 @@ impl TransactionalMemory {
     fn free_helper(&self, page: PageNumber, allocated: &mut PageTrackerPolicy) {
         #[cfg(debug_assertions)]
         {
-            assert!(
-                !self
-                    .read_page_ref_counts
-                    .lock()
-                    .unwrap()
-                    .contains_key(&page)
-            );
+            assert!(!self
+                .read_page_ref_counts
+                .lock()
+                .unwrap()
+                .contains_key(&page));
             assert!(self.allocated_pages.lock().unwrap().remove(&page));
             assert!(!self.open_dirty_pages.lock().unwrap().contains(&page));
         }

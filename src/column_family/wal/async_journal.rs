@@ -29,7 +29,7 @@
 #![allow(dead_code)] // Phase 1 core implementation - will be used in integration
 
 use super::entry::WALEntry;
-use super::journal::{WAL_HEADER_SIZE, WALHeader};
+use super::journal::{WALHeader, WAL_HEADER_SIZE};
 use crate::StorageBackend;
 use std::collections::BTreeSet;
 use std::io;
@@ -64,7 +64,7 @@ pub struct AsyncWALJournal {
     /// Condition variable for notifying sync thread of new writes.
     sync_signal: Arc<Condvar>,
 
-    /// Mutex for sync_signal (required by Condvar).
+    /// Mutex for `sync_signal` (required by Condvar).
     sync_mutex: Arc<Mutex<()>>,
 
     /// Shutdown signal for background thread.
@@ -97,6 +97,8 @@ impl AsyncWALJournal {
         let header = if backend_len == 0 {
             // New backend - write initial header
             let header = WALHeader::new();
+            // Resize backend to accommodate header first
+            backend.set_len(WAL_HEADER_SIZE as u64)?;
             backend.write(0, &header.to_bytes())?;
             backend.sync_data()?;
             header
@@ -203,10 +205,12 @@ impl AsyncWALJournal {
 
         // Append to backend (buffered write, no fsync yet)
         // Use append_lock to make len() + write() atomic
-        let _guard = self.append_lock.lock().unwrap();
+        let guard = self.append_lock.lock().unwrap();
         let offset = self.backend.len()?;
+        // Resize backend to accommodate new data
+        self.backend.set_len(offset + wire_data.len() as u64)?;
         self.backend.write(offset, &wire_data)?;
-        drop(_guard);
+        drop(guard);
 
         // Add to pending sync queue
         {
@@ -296,17 +300,15 @@ impl AsyncWALJournal {
                 has_pending && timeout_elapsed
             };
 
-            if should_sync {
-                if Self::perform_sync(&backend, &pending_sync, &last_synced).is_ok() {
-                    last_sync_time = std::time::Instant::now();
-                }
+            if should_sync && Self::perform_sync(&backend, &pending_sync, &last_synced).is_ok() {
+                last_sync_time = std::time::Instant::now();
             }
         }
     }
 
     /// Performs a single sync operation.
     ///
-    /// Fsyncs the backend and updates last_synced to reflect all pending writes.
+    /// Fsyncs the backend and updates `last_synced` to reflect all pending writes.
     fn perform_sync(
         backend: &Arc<dyn StorageBackend>,
         pending_sync: &Arc<Mutex<BTreeSet<u64>>>,
@@ -425,6 +427,7 @@ impl Drop for AsyncWALJournal {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_sign_loss)]
 mod tests {
     use super::*;
     use crate::backends::InMemoryBackend;
@@ -484,7 +487,7 @@ mod tests {
                 durability: Durability::Immediate,
             };
 
-            let mut entry = WALEntry::new(format!("cf_{}", i), i as u64, payload);
+            let mut entry = WALEntry::new(format!("cf_{i}"), i as u64, payload);
             let seq = journal.append(&mut entry).unwrap();
             sequences.push(seq);
         }

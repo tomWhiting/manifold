@@ -6,7 +6,7 @@ use crate::timeseries::TimeSeriesTable;
 use manifold::{ReadableTable, StorageError};
 use std::time::Duration;
 
-impl<'txn, E: TimestampEncoding> TimeSeriesTable<'txn, E> {
+impl<E: TimestampEncoding> TimeSeriesTable<'_, E> {
     /// Applies a retention policy to delete data older than the specified duration.
     ///
     /// # Arguments
@@ -39,6 +39,7 @@ impl<'txn, E: TimestampEncoding> TimeSeriesTable<'txn, E> {
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::cast_possible_truncation, clippy::cast_lossless)]
     pub fn apply_retention(
         &mut self,
         granularity: Granularity,
@@ -47,14 +48,12 @@ impl<'txn, E: TimestampEncoding> TimeSeriesTable<'txn, E> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| {
-                StorageError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("System time error: {}", e),
-                ))
+                StorageError::Io(std::io::Error::other(format!("System time error: {e}")))
             })?
-            .as_millis() as u64;
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
 
-        let keep_duration_ms = keep_duration.as_millis() as u64;
+        let keep_duration_ms = keep_duration.as_millis().min(u128::from(u64::MAX)) as u64;
         if keep_duration_ms == 0 {
             return Err(StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -233,7 +232,8 @@ mod tests {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64;
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
 
         // Write data at different ages
         {
@@ -246,7 +246,7 @@ mod tests {
             ts.write("server1", old_ts + 1000, 11.0).unwrap();
 
             // Recent data (1 day ago)
-            let recent_ts = now_ms - (1 * 24 * 60 * 60 * 1000);
+            let recent_ts = now_ms - (24 * 60 * 60 * 1000);
             ts.write("server1", recent_ts, 20.0).unwrap();
             ts.write("server1", recent_ts + 1000, 21.0).unwrap();
 

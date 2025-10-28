@@ -280,7 +280,7 @@ fn test_batch_insertion_unsorted() {
             (u1, "knows", u4, true, 0.5),
         ];
 
-        let count = graph.add_edges_batch(edges, false).unwrap();
+        let count = graph.add_edges_batch(&edges, false).unwrap();
         assert_eq!(count, 5);
         assert_eq!(graph.len().unwrap(), 5);
 
@@ -341,7 +341,7 @@ fn test_batch_insertion_sorted() {
             (u2, "follows", u3, true, 0.9),
         ];
 
-        let count = graph.add_edges_batch(edges, true).unwrap();
+        let count = graph.add_edges_batch(&edges, true).unwrap();
         assert_eq!(count, 3);
 
         drop(graph);
@@ -367,7 +367,7 @@ fn test_batch_insertion_empty() {
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
 
         let edges: Vec<(Uuid, &str, Uuid, bool, f32)> = vec![];
-        let count = graph.add_edges_batch(edges, false).unwrap();
+        let count = graph.add_edges_batch(&edges, false).unwrap();
         assert_eq!(count, 0);
 
         drop(graph);
@@ -403,7 +403,7 @@ fn test_full_graph_iteration() {
             (u3, "knows", u1, false, 0.5),
         ];
 
-        graph.add_edges_batch(edges, false).unwrap();
+        graph.add_edges_batch(&edges, false).unwrap();
         drop(graph);
         write_txn.commit().unwrap();
     }
@@ -412,31 +412,23 @@ fn test_full_graph_iteration() {
     let read_txn = cf.begin_read().unwrap();
     let graph = GraphTableRead::open(&read_txn, "edges").unwrap();
 
-    let all_edges: Vec<Edge> = graph.iter().unwrap().map(|r| r.unwrap()).collect();
+    let all_edges: Vec<Edge> = graph.all_edges().unwrap().map(|r| r.unwrap()).collect();
 
     assert_eq!(all_edges.len(), 4);
 
     // Verify we can find specific edges
-    assert!(
-        all_edges
-            .iter()
-            .any(|e| e.source == u1 && e.target == u2 && e.edge_type == "follows")
-    );
-    assert!(
-        all_edges
-            .iter()
-            .any(|e| e.source == u1 && e.target == u3 && e.edge_type == "follows")
-    );
-    assert!(
-        all_edges
-            .iter()
-            .any(|e| e.source == u2 && e.target == u3 && e.edge_type == "follows")
-    );
-    assert!(
-        all_edges
-            .iter()
-            .any(|e| e.source == u3 && e.target == u1 && e.edge_type == "knows")
-    );
+    assert!(all_edges
+        .iter()
+        .any(|e| e.source == u1 && e.target == u2 && e.edge_type == "follows"));
+    assert!(all_edges
+        .iter()
+        .any(|e| e.source == u1 && e.target == u3 && e.edge_type == "follows"));
+    assert!(all_edges
+        .iter()
+        .any(|e| e.source == u2 && e.target == u3 && e.edge_type == "follows"));
+    assert!(all_edges
+        .iter()
+        .any(|e| e.source == u3 && e.target == u1 && e.edge_type == "knows"));
 }
 
 #[test]
@@ -467,7 +459,7 @@ fn test_edge_source_trait() {
     assert_eq!(graph.edge_count().unwrap(), 1);
     assert!(!graph.is_empty().unwrap());
 
-    let edges: Vec<Edge> = graph.iter_edges().unwrap().map(|r| r.unwrap()).collect();
+    let edges: Vec<Edge> = graph.all_edges().unwrap().map(|r| r.unwrap()).collect();
 
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].source, u1);
@@ -494,7 +486,7 @@ fn test_batch_with_duplicates() {
             (u1, "follows", u2, false, 0.5), // Duplicate, should overwrite
         ];
 
-        let count = graph.add_edges_batch(edges, false).unwrap();
+        let count = graph.add_edges_batch(&edges, false).unwrap();
         assert_eq!(count, 2); // Both inserts attempted
 
         drop(graph);

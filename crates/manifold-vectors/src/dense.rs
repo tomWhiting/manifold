@@ -1,7 +1,7 @@
 //! Dense fixed-dimension vector storage with efficient access.
 
 use manifold::{
-    AccessGuard, ReadOnlyTable, ReadTransaction, ReadableTable, ReadableTableMetadata, 
+    AccessGuard, ReadOnlyTable, ReadTransaction, ReadableTable, ReadableTableMetadata,
     StorageError, Table, TableDefinition, TableError, WriteTransaction,
 };
 use std::ops::Deref;
@@ -26,7 +26,11 @@ impl<'txn, const DIM: usize> VectorTable<'txn, DIM> {
     }
 
     /// Inserts multiple vectors in a single batch operation.
-    pub fn insert_batch(&mut self, items: Vec<(&str, [f32; DIM])>, sorted: bool) -> Result<(), StorageError> {
+    pub fn insert_batch(
+        &mut self,
+        items: Vec<(&str, [f32; DIM])>,
+        sorted: bool,
+    ) -> Result<(), StorageError> {
         self.table.insert_bulk(items, sorted)?;
         Ok(())
     }
@@ -56,7 +60,7 @@ impl<const DIM: usize> VectorTableRead<DIM> {
         let def: TableDefinition<&str, [f32; DIM]> = TableDefinition::new(name);
         let table = txn.open_table(def).map_err(|e| match e {
             TableError::Storage(s) => s,
-            _ => StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)),
+            _ => StorageError::Io(std::io::Error::other(e)),
         })?;
         Ok(Self { table })
     }
@@ -80,8 +84,10 @@ impl<const DIM: usize> VectorTableRead<DIM> {
     }
 
     /// Iterates over all vectors in the table.
-    pub fn iter(&self) -> Result<VectorIter<'_, DIM>, StorageError> {
-        Ok(VectorIter { inner: self.table.iter()? })
+    pub fn all_vectors(&self) -> Result<VectorIter<'_, DIM>, StorageError> {
+        Ok(VectorIter {
+            inner: self.table.iter()?,
+        })
     }
 }
 
@@ -97,7 +103,10 @@ pub struct VectorGuard<'a, const DIM: usize> {
 impl<'a, const DIM: usize> VectorGuard<'a, DIM> {
     fn new(guard: AccessGuard<'a, [f32; DIM]>) -> Self {
         let value_cached = guard.value();
-        Self { value_cached, _guard: guard }
+        Self {
+            value_cached,
+            _guard: guard,
+        }
     }
 
     /// Returns a reference to the vector data.
@@ -111,7 +120,7 @@ impl<'a, const DIM: usize> VectorGuard<'a, DIM> {
     }
 }
 
-impl<'a, const DIM: usize> Deref for VectorGuard<'a, DIM> {
+impl<const DIM: usize> Deref for VectorGuard<'_, DIM> {
     type Target = [f32; DIM];
 
     fn deref(&self) -> &Self::Target {

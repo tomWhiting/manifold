@@ -1,5 +1,8 @@
 //! Sparse vector storage using COO format.
-use manifold::{ReadOnlyTable, ReadTransaction, ReadableTableMetadata, StorageError, Table, TableDefinition, TableError, WriteTransaction};
+use manifold::{
+    ReadOnlyTable, ReadTransaction, ReadableTableMetadata, StorageError, Table, TableDefinition,
+    TableError, WriteTransaction,
+};
 
 /// A sparse vector represented as (index, value) pairs.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,17 +17,17 @@ impl SparseVector {
         entries.sort_unstable_by_key(|(idx, _)| *idx);
         Self { entries }
     }
-    
+
     /// Returns the number of non-zero entries
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-    
+
     /// Returns true if there are no entries
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-    
+
     /// Computes the dot product with another sparse vector
     pub fn dot(&self, other: &Self) -> f32 {
         let mut result = 0.0;
@@ -59,18 +62,18 @@ impl<'txn> SparseVectorTable<'txn> {
         let table = txn.open_table(def)?;
         Ok(Self { table })
     }
-    
+
     /// Inserts a sparse vector
     pub fn insert(&mut self, key: &str, vector: &SparseVector) -> Result<(), TableError> {
         self.table.insert(key, &vector.entries)?;
         Ok(())
     }
-    
+
     /// Returns the number of vectors stored
     pub fn len(&self) -> Result<u64, StorageError> {
         self.table.len()
     }
-    
+
     /// Returns true if the table is empty
     pub fn is_empty(&self) -> Result<bool, StorageError> {
         Ok(self.len()? == 0)
@@ -88,23 +91,23 @@ impl SparseVectorTableRead {
         let def: TableDefinition<&str, Vec<(u32, f32)>> = TableDefinition::new(name);
         let table = txn.open_table(def).map_err(|e| match e {
             TableError::Storage(s) => s,
-            _ => StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)),
+            _ => StorageError::Io(std::io::Error::other(e)),
         })?;
         Ok(Self { table })
     }
-    
+
     /// Retrieves a sparse vector by key
     pub fn get(&self, key: &str) -> Result<Option<SparseVector>, StorageError> {
         Ok(self.table.get(key)?.map(|guard| SparseVector {
-            entries: guard.value().to_vec(),
+            entries: guard.value().clone(),
         }))
     }
-    
+
     /// Returns the number of vectors stored
     pub fn len(&self) -> Result<u64, StorageError> {
         self.table.len()
     }
-    
+
     /// Returns true if the table is empty
     pub fn is_empty(&self) -> Result<bool, StorageError> {
         Ok(self.len()? == 0)

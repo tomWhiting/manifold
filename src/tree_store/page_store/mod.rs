@@ -15,12 +15,13 @@ mod savepoint;
 mod xxh3;
 
 pub use backends::InMemoryBackend;
+pub(crate) use backends::ReadOnlyBackend;
 pub(crate) use base::{
-    MAX_PAIR_LENGTH, MAX_VALUE_LENGTH, Page, PageHint, PageNumber, PageTrackerPolicy,
+    Page, PageHint, PageNumber, PageTrackerPolicy, MAX_PAIR_LENGTH, MAX_VALUE_LENGTH,
 };
 pub(crate) use header::PAGE_SIZE;
 pub(crate) use page_manager::{
-    FILE_FORMAT_VERSION3, ShrinkPolicy, TransactionalMemory, xxh3_checksum,
+    xxh3_checksum, ShrinkPolicy, TransactionalMemory, FILE_FORMAT_VERSION3,
 };
 pub use savepoint::Savepoint;
 pub(crate) use savepoint::SerializedSavepoint;

@@ -1,7 +1,7 @@
 use super::entry::WALEntry;
-use crate::StorageBackend;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::tree_store::file_backend::FileBackend;
+use crate::StorageBackend;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::OpenOptions;
 use std::io;
@@ -25,7 +25,7 @@ pub(crate) const WAL_HEADER_SIZE: usize = 512;
 /// Tuned for balance: 100μs = low latency, 300μs = balanced, 500μs+ = max batching
 /// Set to 0 to disable batching window (immediate fsync when leader elected)
 /// NOTE: Testing showed batching window (50-250μs) actually REDUCES performance
-/// in our workload. Group commit already works via wait_for_sync() without spinning.
+/// in our workload. Group commit already works via `wait_for_sync()` without spinning.
 const GROUP_COMMIT_WINDOW_MICROS: u64 = 0;
 
 /// The Write-Ahead Log journal manages durable logging of transactions.
@@ -335,7 +335,7 @@ impl WALJournal {
 
     /// Helper method to read entries from a backend (used by both sync and async journals).
     ///
-    /// This is a static method so it can be called by AsyncWALJournal.
+    /// This is a static method so it can be called by `AsyncWALJournal`.
     pub(crate) fn read_entries_from_backend(
         backend: &Arc<dyn StorageBackend>,
         start_seq: u64,

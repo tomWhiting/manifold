@@ -30,10 +30,10 @@ impl<'txn, E: TimestampEncoding> TimeSeriesTable<'txn, E> {
     ///
     /// Creates four internal tables: `{name}_raw`, `{name}_minute`, `{name}_hour`, `{name}_day`.
     pub fn open(txn: &'txn WriteTransaction, name: &str) -> Result<Self, TableError> {
-        let raw_name = format!("{}_raw", name);
-        let minute_name = format!("{}_minute", name);
-        let hour_name = format!("{}_hour", name);
-        let day_name = format!("{}_day", name);
+        let raw_name = format!("{name}_raw");
+        let minute_name = format!("{name}_minute");
+        let hour_name = format!("{name}_hour");
+        let day_name = format!("{name}_day");
 
         let raw_def: TableDefinition<(u64, &str), f32> = TableDefinition::new(&raw_name);
         let minute_def: TableDefinition<(u64, &str), Aggregate> =
@@ -59,7 +59,7 @@ impl<'txn, E: TimestampEncoding> TimeSeriesTable<'txn, E> {
     ///
     /// # Arguments
     ///
-    /// * `series_id` - Series identifier (e.g., "cpu.usage", "sensor_42.temp")
+    /// * `series_id` - Series identifier (e.g., `"cpu.usage"`, `"sensor_42.temp"`)
     /// * `timestamp_ms` - Timestamp in milliseconds since epoch
     /// * `value` - Metric value
     pub fn write(
@@ -76,8 +76,8 @@ impl<'txn, E: TimestampEncoding> TimeSeriesTable<'txn, E> {
     ///
     /// # Arguments
     ///
-    /// * `points` - Vector of (series_id, timestamp_ms, value) tuples
-    /// * `sorted` - Whether the points are pre-sorted by (timestamp, series_id)
+    /// * `points` - Vector of (`series_id`, `timestamp_ms`, `value`) tuples
+    /// * `sorted` - Whether the points are pre-sorted by (`timestamp`, `series_id`)
     pub fn write_batch(
         &mut self,
         points: Vec<(&str, u64, f32)>,
@@ -140,10 +140,10 @@ pub struct TimeSeriesTableRead<E: TimestampEncoding> {
 impl<E: TimestampEncoding> TimeSeriesTableRead<E> {
     /// Opens a time series table for reading.
     pub fn open(txn: &ReadTransaction, name: &str) -> Result<Self, TableError> {
-        let raw_name = format!("{}_raw", name);
-        let minute_name = format!("{}_minute", name);
-        let hour_name = format!("{}_hour", name);
-        let day_name = format!("{}_day", name);
+        let raw_name = format!("{name}_raw");
+        let minute_name = format!("{name}_minute");
+        let hour_name = format!("{name}_hour");
+        let day_name = format!("{name}_day");
 
         let raw_def: TableDefinition<(u64, &str), f32> = TableDefinition::new(&raw_name);
         let minute_def: TableDefinition<(u64, &str), Aggregate> =
@@ -167,7 +167,9 @@ impl<E: TimestampEncoding> TimeSeriesTableRead<E> {
 
     /// Gets a single data point from the raw table.
     pub fn get(&self, series_id: &str, timestamp_ms: u64) -> Result<Option<f32>, StorageError> {
-        self.raw.get((timestamp_ms, series_id)).map(|opt| opt.map(|guard| guard.value()))
+        self.raw
+            .get((timestamp_ms, series_id))
+            .map(|opt| opt.map(|guard| guard.value()))
     }
 
     /// Returns an iterator over raw data points in a time range.
@@ -185,9 +187,9 @@ impl<E: TimestampEncoding> TimeSeriesTableRead<E> {
     ) -> Result<RangeIter<'_>, StorageError> {
         let start_key = (start_ms, series_id);
         let end_key = (end_ms, series_id);
-        
+
         let iter = self.raw.range(start_key..end_key)?;
-        
+
         Ok(RangeIter {
             inner: iter,
             series_id: series_id.to_string(),
@@ -202,18 +204,22 @@ impl<E: TimestampEncoding> TimeSeriesTableRead<E> {
         timestamp_ms: u64,
     ) -> Result<Option<Aggregate>, StorageError> {
         let rounded_ts = granularity.round_down(timestamp_ms);
-        
+
         let table = match granularity {
-            Granularity::Raw => return Err(StorageError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Cannot get aggregate for Raw granularity",
-            ))),
+            Granularity::Raw => {
+                return Err(StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Cannot get aggregate for Raw granularity",
+                )))
+            }
             Granularity::Minute => &self.minute,
             Granularity::Hour => &self.hour,
             Granularity::Day => &self.day,
         };
-        
-        table.get((rounded_ts, series_id)).map(|opt| opt.map(|guard| guard.value()))
+
+        table
+            .get((rounded_ts, series_id))
+            .map(|opt| opt.map(|guard| guard.value()))
     }
 
     /// Returns an iterator over aggregates in a time range.
@@ -225,20 +231,22 @@ impl<E: TimestampEncoding> TimeSeriesTableRead<E> {
         end_ms: u64,
     ) -> Result<AggregateRangeIter<'_>, StorageError> {
         let table = match granularity {
-            Granularity::Raw => return Err(StorageError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Cannot iterate aggregates for Raw granularity",
-            ))),
+            Granularity::Raw => {
+                return Err(StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Cannot iterate aggregates for Raw granularity",
+                )))
+            }
             Granularity::Minute => &self.minute,
             Granularity::Hour => &self.hour,
             Granularity::Day => &self.day,
         };
-        
+
         let start_key = (start_ms, series_id);
         let end_key = (end_ms, series_id);
-        
+
         let iter = table.range(start_key..end_key)?;
-        
+
         Ok(AggregateRangeIter {
             inner: iter,
             series_id: series_id.to_string(),
@@ -270,7 +278,7 @@ pub struct RangeIter<'a> {
     series_id: String,
 }
 
-impl<'a> Iterator for RangeIter<'a> {
+impl Iterator for RangeIter<'_> {
     type Item = Result<(u64, f32), StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -296,7 +304,7 @@ pub struct AggregateRangeIter<'a> {
     series_id: String,
 }
 
-impl<'a> Iterator for AggregateRangeIter<'a> {
+impl Iterator for AggregateRangeIter<'_> {
     type Item = Result<(u64, Aggregate), StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -315,4 +323,3 @@ impl<'a> Iterator for AggregateRangeIter<'a> {
         }
     }
 }
-

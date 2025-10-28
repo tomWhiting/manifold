@@ -27,7 +27,7 @@ use manifold::StorageError;
 pub trait TimeSeriesSource<'a> {
     /// Iterator over raw time series data points.
     type RawIter: Iterator<Item = Result<(u64, f32), StorageError>>;
-    
+
     /// Iterator over aggregate data points.
     type AggregateIter: Iterator<Item = Result<(u64, Aggregate), StorageError>>;
 
@@ -62,12 +62,8 @@ pub trait TimeSeriesSource<'a> {
     ) -> Result<Self::AggregateIter, StorageError>;
 
     /// Returns the number of raw data points in a time range.
-    fn count_raw(
-        &self,
-        series_id: &str,
-        start_ms: u64,
-        end_ms: u64,
-    ) -> Result<usize, StorageError>;
+    fn count_raw(&self, series_id: &str, start_ms: u64, end_ms: u64)
+        -> Result<usize, StorageError>;
 }
 
 /// Iterator over raw time series data points.
@@ -82,7 +78,7 @@ pub struct RawPointsIter<'a, E: TimestampEncoding> {
     current_pos: u64,
 }
 
-impl<'a, E: TimestampEncoding> Iterator for RawPointsIter<'a, E> {
+impl<E: TimestampEncoding> Iterator for RawPointsIter<'_, E> {
     type Item = Result<(u64, f32), StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -112,7 +108,7 @@ pub struct AggregatePointsIter<'a, E: TimestampEncoding> {
     current_pos: u64,
 }
 
-impl<'a, E: TimestampEncoding> Iterator for AggregatePointsIter<'a, E> {
+impl<E: TimestampEncoding> Iterator for AggregatePointsIter<'_, E> {
     type Item = Result<(u64, Aggregate), StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -172,7 +168,7 @@ impl<'a, E: TimestampEncoding + 'a> TimeSeriesSource<'a> for TimeSeriesTableRead
     ) -> Result<usize, StorageError> {
         let start_key = (start_ms, series_id);
         let end_key = (end_ms, series_id);
-        
+
         let mut count = 0;
         for item in self.raw_table().range(start_key..end_key)? {
             item?; // Propagate errors
@@ -198,7 +194,9 @@ mod tests {
         // Write some test data
         {
             let write_txn = cf.begin_write().unwrap();
-            let mut ts = crate::timeseries::TimeSeriesTable::<AbsoluteEncoding>::open(&write_txn, "cpu").unwrap();
+            let mut ts =
+                crate::timeseries::TimeSeriesTable::<AbsoluteEncoding>::open(&write_txn, "cpu")
+                    .unwrap();
 
             ts.write("server1", 100_000, 10.0).unwrap();
             ts.write("server1", 200_000, 20.0).unwrap();

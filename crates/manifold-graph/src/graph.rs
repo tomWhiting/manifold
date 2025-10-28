@@ -22,8 +22,8 @@ impl<'txn> GraphTable<'txn> {
     ///
     /// Creates two internal tables: `{name}_forward` and `{name}_reverse`.
     pub fn open(txn: &'txn WriteTransaction, name: &str) -> Result<Self, TableError> {
-        let forward_name = format!("{}_forward", name);
-        let reverse_name = format!("{}_reverse", name);
+        let forward_name = format!("{name}_forward");
+        let reverse_name = format!("{name}_reverse");
 
         let forward_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32)> =
             TableDefinition::new(&forward_name);
@@ -105,9 +105,9 @@ impl<'txn> GraphTable<'txn> {
     ///
     /// # Arguments
     ///
-    /// * `edges` - Vector of edge tuples: (source, edge_type, target, is_active, weight)
-    /// * `sorted` - Whether the input is pre-sorted by (source, edge_type, target).
-    ///              Set to `true` if your data is already sorted for best performance.
+    /// * `edges` - Vector of edge tuples: (source, `edge_type`, target, `is_active`, `weight`)
+    /// * `sorted` - Whether the input is pre-sorted by (source, `edge_type`, target).
+    ///   Set to `true` if your data is already sorted for best performance.
     ///
     /// # Returns
     ///
@@ -140,14 +140,15 @@ impl<'txn> GraphTable<'txn> {
     ///     (u2, "follows", u3, true, 0.9),
     /// ];
     ///
-    /// let count = graph.add_edges_batch(edges, false)?;
+    /// let count = graph.add_edges_batch(&edges, false)?;
     /// assert_eq!(count, 3);
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::type_complexity)]
     pub fn add_edges_batch(
         &mut self,
-        edges: Vec<(Uuid, &str, Uuid, bool, f32)>,
+        edges: &[(Uuid, &str, Uuid, bool, f32)],
         sorted: bool,
     ) -> Result<usize, StorageError> {
         // Prepare forward table items: (source, edge_type, target) -> (is_active, weight)
@@ -195,8 +196,8 @@ pub struct GraphTableRead {
 impl GraphTableRead {
     /// Opens a graph table for reading.
     pub fn open(txn: &ReadTransaction, name: &str) -> Result<Self, StorageError> {
-        let forward_name = format!("{}_forward", name);
-        let reverse_name = format!("{}_reverse", name);
+        let forward_name = format!("{name}_forward");
+        let reverse_name = format!("{name}_reverse");
 
         let forward_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32)> =
             TableDefinition::new(&forward_name);
@@ -205,18 +206,18 @@ impl GraphTableRead {
 
         let forward = txn.open_table(forward_def).map_err(|e| match e {
             TableError::Storage(s) => s,
-            _ => StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)),
+            _ => StorageError::Io(std::io::Error::other(e)),
         })?;
 
         let reverse = txn.open_table(reverse_def).map_err(|e| match e {
             TableError::Storage(s) => s,
-            _ => StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)),
+            _ => StorageError::Io(std::io::Error::other(e)),
         })?;
 
         Ok(Self { forward, reverse })
     }
 
-    /// Retrieves a specific edge by source, edge_type, and target.
+    /// Retrieves a specific edge by source, `edge_type`, and target.
     pub fn get_edge(
         &self,
         source: &Uuid,
@@ -263,7 +264,7 @@ impl GraphTableRead {
     /// This method iterates over the forward table only to avoid returning
     /// duplicate edges. Use this for full-graph traversal or when you need
     /// to process every edge exactly once.
-    pub fn iter(&self) -> Result<AllEdgesIter<'_>, StorageError> {
+    pub fn all_edges(&self) -> Result<AllEdgesIter<'_>, StorageError> {
         Ok(AllEdgesIter {
             inner: self.forward.iter()?,
         })
@@ -285,7 +286,7 @@ pub struct OutgoingEdgeIter<'a> {
     inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32)>,
 }
 
-impl<'a> Iterator for OutgoingEdgeIter<'a> {
+impl Iterator for OutgoingEdgeIter<'_> {
     type Item = Result<Edge, StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -304,7 +305,7 @@ pub struct AllEdgesIter<'a> {
     inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32)>,
 }
 
-impl<'a> Iterator for AllEdgesIter<'a> {
+impl Iterator for AllEdgesIter<'_> {
     type Item = Result<Edge, StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -323,7 +324,7 @@ pub struct IncomingEdgeIter<'a> {
     inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32)>,
 }
 
-impl<'a> Iterator for IncomingEdgeIter<'a> {
+impl Iterator for IncomingEdgeIter<'_> {
     type Item = Result<Edge, StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -219,7 +219,7 @@ fn main() -> Result<()> {
 
         // Compute dense similarity scores
         let mut dense_scores: Vec<(String, f32)> = Vec::new();
-        for result in dense_table.iter()? {
+        for result in dense_table.all_vectors()? {
             let (doc_id, doc_guard) = result?;
             let similarity = distance::cosine(&query_dense_vec, doc_guard.value());
             dense_scores.push((doc_id, similarity));

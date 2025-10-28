@@ -12,7 +12,7 @@
 //! petgraph provides algorithmic capabilities.
 
 use manifold::column_family::ColumnFamilyDatabase;
-use manifold_graph::{EdgeSource, GraphTable, GraphTableRead};
+use manifold_graph::{GraphTable, GraphTableRead};
 use petgraph::algo::{dijkstra, kosaraju_scc};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (external.id, "links_to", home.id, true, 1.0),
         ];
 
-        let count = graph.add_edges_batch(links, false)?;
+        let count = graph.add_edges_batch(&links, false)?;
         println!("Inserted {} links in batch\n", count);
 
         drop(graph);
@@ -149,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Add all edges using EdgeSource trait
-    for edge_result in graph_read.iter_edges()? {
+    for edge_result in graph_read.all_edges()? {
         let edge = edge_result?;
         if edge.edge_type == "links_to" && edge.is_active {
             let source_idx = node_map[&edge.source];
@@ -171,10 +171,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let page_ranks = pagerank(&petgraph_graph, 15, 0.85);
 
     // Create reverse lookup
-    let idx_to_page: HashMap<NodeIndex, &Page> = pages
-        .iter()
-        .map(|p| (node_map[&p.id], *p))
-        .collect();
+    let idx_to_page: HashMap<NodeIndex, &Page> =
+        pages.iter().map(|p| (node_map[&p.id], *p)).collect();
 
     let mut ranked: Vec<_> = page_ranks.iter().collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());

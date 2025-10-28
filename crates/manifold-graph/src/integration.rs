@@ -5,7 +5,7 @@ use manifold::StorageError;
 
 /// Trait for edge sources consumable by graph algorithm libraries.
 ///
-/// This trait enables external graph algorithm libraries (BFS, DFS, PageRank, etc.)
+/// This trait enables external graph algorithm libraries (BFS, DFS, `PageRank`, etc.)
 /// to efficiently iterate over all edges in the graph.
 pub trait EdgeSource {
     /// Iterator type over edges
@@ -16,7 +16,7 @@ pub trait EdgeSource {
     /// Returns an iterator over all edges in the graph.
     ///
     /// The iterator provides access to all edges with their properties.
-    fn iter_edges(&self) -> Result<Self::Iter<'_>, StorageError>;
+    fn all_edges(&self) -> Result<Self::Iter<'_>, StorageError>;
 
     /// Returns the number of edges.
     fn edge_count(&self) -> Result<u64, StorageError>;
@@ -33,8 +33,8 @@ impl EdgeSource for GraphTableRead {
     where
         Self: 'a;
 
-    fn iter_edges(&self) -> Result<Self::Iter<'_>, StorageError> {
-        self.iter()
+    fn all_edges(&self) -> Result<Self::Iter<'_>, StorageError> {
+        GraphTableRead::all_edges(self)
     }
 
     fn edge_count(&self) -> Result<u64, StorageError> {

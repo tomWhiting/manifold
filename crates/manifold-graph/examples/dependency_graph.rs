@@ -127,14 +127,13 @@ fn topological_sort(
 
         for edge in graph.outgoing_edges(&node)? {
             let edge = edge?;
-            if edge.edge_type == "depends_on" && edge.is_active {
-                if let Some(deg) = in_degree.get_mut(&edge.target) {
+            if edge.edge_type == "depends_on" && edge.is_active
+                && let Some(deg) = in_degree.get_mut(&edge.target) {
                     *deg -= 1;
                     if *deg == 0 {
                         queue.push_back(edge.target);
                     }
                 }
-            }
         }
     }
 
@@ -157,11 +156,10 @@ fn find_dependents(
     while let Some(current) = queue.pop_front() {
         for edge in graph.incoming_edges(&current)? {
             let edge = edge?;
-            if edge.edge_type == "depends_on" && edge.is_active {
-                if dependents.insert(edge.source) {
+            if edge.edge_type == "depends_on" && edge.is_active
+                && dependents.insert(edge.source) {
                     queue.push_back(edge.source);
                 }
-            }
         }
     }
 
@@ -236,7 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (http.id, "depends_on", logger.id, true, 1.0),
         ];
 
-        let count = graph.add_edges_batch(dependencies, false)?;
+        let count = graph.add_edges_batch(&dependencies, false)?;
         println!("Created {} dependencies\n", count);
 
         drop(graph);
@@ -415,11 +413,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         for edge in graph.outgoing_edges(&pkg_id)? {
             let edge = edge?;
-            if edge.edge_type == "depends_on" && edge.is_active {
-                if visited.insert(edge.target) {
+            if edge.edge_type == "depends_on" && edge.is_active
+                && visited.insert(edge.target) {
                     collect_all_deps(edge.target, graph, visited)?;
                 }
-            }
         }
         Ok(())
     }

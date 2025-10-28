@@ -1,7 +1,7 @@
 use crate::transaction_tracker::{TransactionId, TransactionTracker};
 use crate::tree_store::{
-    BtreeHeader, InternalTableDefinition, PAGE_SIZE, PageHint, PageNumber, ShrinkPolicy, TableTree,
-    TableType, TransactionalMemory,
+    BtreeHeader, InternalTableDefinition, PageHint, PageNumber, ReadOnlyBackend, ShrinkPolicy,
+    TableTree, TableType, TransactionalMemory, PAGE_SIZE,
 };
 use crate::types::{Key, Value};
 use crate::{
@@ -19,9 +19,9 @@ use std::{io, thread};
 use crate::error::TransactionError;
 use crate::sealed::Sealed;
 use crate::transactions::{
-    ALLOCATOR_STATE_TABLE_NAME, AllocatorStateKey, AllocatorStateTree, DATA_ALLOCATED_TABLE,
-    DATA_FREED_TABLE, PageList, SYSTEM_FREED_TABLE, SystemTableDefinition,
-    TransactionIdWithPagination,
+    AllocatorStateKey, AllocatorStateTree, PageList, SystemTableDefinition,
+    TransactionIdWithPagination, ALLOCATOR_STATE_TABLE_NAME, DATA_ALLOCATED_TABLE,
+    DATA_FREED_TABLE, SYSTEM_FREED_TABLE,
 };
 use crate::tree_store::file_backend::FileBackend;
 #[cfg(feature = "logging")]
@@ -426,7 +426,7 @@ impl ReadOnlyDatabase {
         #[cfg(feature = "logging")]
         info!("Opening database in read-only {:?}", &file_path);
         let mem = TransactionalMemory::new(
-            file,
+            Box::new(ReadOnlyBackend::new(file)),
             false,
             page_size,
             region_size,
@@ -1298,8 +1298,8 @@ mod test {
     };
     use std::fs::File;
     use std::io::{ErrorKind, Read, Seek, SeekFrom};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     #[derive(Debug)]
     struct FailingBackend {
@@ -1327,7 +1327,11 @@ mod test {
             if self
                 .countdown
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                    if x > 0 { Some(x - 1) } else { None }
+                    if x > 0 {
+                        Some(x - 1)
+                    } else {
+                        None
+                    }
                 })
                 .is_err()
             {

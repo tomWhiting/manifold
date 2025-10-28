@@ -1,9 +1,9 @@
 use crate::db::TransactionGuard;
 use crate::sealed::Sealed;
 use crate::tree_store::{
-    AccessGuardMutInPlace, Btree, BtreeExtractIf, BtreeHeader, BtreeMut, BtreeRangeIter,
-    MAX_PAIR_LENGTH, MAX_VALUE_LENGTH, PageHint, PageNumber, PageTrackerPolicy, RawBtree,
-    TransactionalMemory,
+    AccessGuardMutInPlace, Btree, BtreeExtractIf, BtreeHeader, BtreeMut, BtreeRangeIter, PageHint,
+    PageNumber, PageTrackerPolicy, RawBtree, TransactionalMemory, MAX_PAIR_LENGTH,
+    MAX_VALUE_LENGTH,
 };
 use crate::types::{Key, MutInPlaceValue, Value};
 use crate::{AccessGuard, AccessGuardMut, StorageError, WriteTransaction};
@@ -240,7 +240,7 @@ impl<'txn, K: Key + 'static, V: Value + 'static> Table<'txn, K, V> {
     ///
     /// * `items` - Iterator of (key, value) pairs to insert
     /// * `sorted` - Hint indicating whether items are already sorted by key.
-    ///              Set to `true` if you know the data is sorted for optimal performance.
+    ///   Set to `true` if you know the data is sorted for optimal performance.
     ///
     /// # Performance
     ///
@@ -341,7 +341,7 @@ impl<'txn, K: Key + 'static, V: Value + 'static> Table<'txn, K, V> {
     }
 
     /// Helper to sort and insert a chunk of items
-    fn insert_sorted_chunk(&mut self, chunk: &mut Vec<(Vec<u8>, Vec<u8>)>) -> Result<usize> {
+    fn insert_sorted_chunk(&mut self, chunk: &mut [(Vec<u8>, Vec<u8>)]) -> Result<usize> {
         // Sort chunk by key bytes
         chunk.sort_by(|a, b| K::compare(&a.0, &b.0));
 
@@ -411,7 +411,7 @@ impl<'txn, K: Key + 'static, V: Value + 'static> Table<'txn, K, V> {
     }
 
     /// Helper to sort and remove a chunk of keys
-    fn remove_sorted_chunk(&mut self, chunk: &mut Vec<Vec<u8>>) -> Result<usize> {
+    fn remove_sorted_chunk(&mut self, chunk: &mut [Vec<u8>]) -> Result<usize> {
         // Sort chunk by key bytes
         chunk.sort_by(|a, b| K::compare(a, b));
 
@@ -773,11 +773,11 @@ pub struct ExtractIf<
 }
 
 impl<
-    'a,
-    K: Key + 'static,
-    V: Value + 'static,
-    F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
-> ExtractIf<'a, K, V, F>
+        'a,
+        K: Key + 'static,
+        V: Value + 'static,
+        F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
+    > ExtractIf<'a, K, V, F>
 {
     pub(crate) fn new(inner: BtreeExtractIf<'a, K, V, F>) -> Self {
         Self { inner }
@@ -785,11 +785,11 @@ impl<
 }
 
 impl<
-    'a,
-    K: Key + 'static,
-    V: Value + 'static,
-    F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
-> Iterator for ExtractIf<'a, K, V, F>
+        'a,
+        K: Key + 'static,
+        V: Value + 'static,
+        F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
+    > Iterator for ExtractIf<'a, K, V, F>
 {
     type Item = Result<(AccessGuard<'a, K>, AccessGuard<'a, V>)>;
 
@@ -805,10 +805,10 @@ impl<
 }
 
 impl<
-    K: Key + 'static,
-    V: Value + 'static,
-    F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
-> DoubleEndedIterator for ExtractIf<'_, K, V, F>
+        K: Key + 'static,
+        V: Value + 'static,
+        F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
+    > DoubleEndedIterator for ExtractIf<'_, K, V, F>
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let entry = self.inner.next_back()?;

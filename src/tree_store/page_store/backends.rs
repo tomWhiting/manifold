@@ -9,7 +9,7 @@ pub(crate) struct ReadOnlyBackend {
 }
 
 impl ReadOnlyBackend {
-    pub fn new(inner: Box<dyn StorageBackend>) -> Self {
+    pub(crate) fn new(inner: Box<dyn StorageBackend>) -> Self {
         Self { inner }
     }
 }

@@ -173,7 +173,7 @@ fn main() -> Result<()> {
         // Compute similarity with all documents
         let mut scores: Vec<(String, f32)> = Vec::new();
 
-        for result in vectors.iter()? {
+        for result in vectors.all_vectors()? {
             let (doc_id, doc_guard) = result?;
             let similarity = distance::cosine(&query_vec, doc_guard.value());
             scores.push((doc_id, similarity));
