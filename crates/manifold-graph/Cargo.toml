@@ -18,6 +18,7 @@ uuid = "1.17.0"
 [dev-dependencies]
 tempfile = "3.5.0"
 uuid = { version = "1.17.0", features = ["v4"] }
+petgraph = "0.8.3"
 
 [lints.clippy]
 big_endian_bytes = "deny"

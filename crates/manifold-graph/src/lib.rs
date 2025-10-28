@@ -84,6 +84,6 @@ pub mod edge;
 pub mod graph;
 pub mod integration;
 
-pub use edge::{Edge, EdgeGuard};
-pub use graph::{GraphTable, GraphTableRead, IncomingEdgeIter, OutgoingEdgeIter};
-
+pub use edge::Edge;
+pub use graph::{AllEdgesIter, GraphTable, GraphTableRead, IncomingEdgeIter, OutgoingEdgeIter};
+pub use integration::EdgeSource;

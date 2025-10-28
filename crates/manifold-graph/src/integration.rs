@@ -1,6 +1,6 @@
 //! Integration traits for external graph algorithm libraries.
 
-use crate::Edge;
+use crate::{AllEdgesIter, Edge, GraphTableRead};
 use manifold::StorageError;
 
 /// Trait for edge sources consumable by graph algorithm libraries.
@@ -9,12 +9,14 @@ use manifold::StorageError;
 /// to efficiently iterate over all edges in the graph.
 pub trait EdgeSource {
     /// Iterator type over edges
-    type Iter: Iterator<Item = Result<Edge, StorageError>>;
+    type Iter<'a>: Iterator<Item = Result<Edge, StorageError>>
+    where
+        Self: 'a;
 
     /// Returns an iterator over all edges in the graph.
     ///
     /// The iterator provides access to all edges with their properties.
-    fn iter_edges(&self) -> Result<Self::Iter, StorageError>;
+    fn iter_edges(&self) -> Result<Self::Iter<'_>, StorageError>;
 
     /// Returns the number of edges.
     fn edge_count(&self) -> Result<u64, StorageError>;
@@ -25,5 +27,17 @@ pub trait EdgeSource {
     }
 }
 
-// Note: Implementation for GraphTableRead will be added in a future iteration
-// when we add a method to iterate over all edges (not just outgoing/incoming)
+impl EdgeSource for GraphTableRead {
+    type Iter<'a>
+        = AllEdgesIter<'a>
+    where
+        Self: 'a;
+
+    fn iter_edges(&self) -> Result<Self::Iter<'_>, StorageError> {
+        self.iter()
+    }
+
+    fn edge_count(&self) -> Result<u64, StorageError> {
+        self.len()
+    }
+}

@@ -2,7 +2,7 @@
 
 use crate::edge::Edge;
 use manifold::{
-    ReadOnlyTable, ReadTransaction, ReadableTableMetadata, StorageError, Table,
+    ReadOnlyTable, ReadTransaction, ReadableTable, ReadableTableMetadata, StorageError, Table,
     TableDefinition, TableError, WriteTransaction,
 };
 use uuid::Uuid;
@@ -58,10 +58,12 @@ impl<'txn> GraphTable<'txn> {
         let properties = (is_active, weight);
 
         // Insert into forward table: (source, edge_type, target) -> properties
-        self.forward.insert(&(*source, edge_type, *target), &properties)?;
+        self.forward
+            .insert(&(*source, edge_type, *target), &properties)?;
 
         // Insert into reverse table: (target, edge_type, source) -> properties
-        self.reverse.insert(&(*target, edge_type, *source), &properties)?;
+        self.reverse
+            .insert(&(*target, edge_type, *source), &properties)?;
 
         Ok(())
     }
@@ -93,6 +95,84 @@ impl<'txn> GraphTable<'txn> {
     ) -> Result<(), TableError> {
         // Since we're updating both properties, just use add_edge which overwrites
         self.add_edge(source, edge_type, target, is_active, weight)
+    }
+
+    /// Adds multiple edges to the graph in a single batch operation.
+    ///
+    /// This method leverages Manifold's bulk insertion API for improved throughput,
+    /// especially beneficial when loading large graphs. Both forward and reverse
+    /// indexes are updated atomically within the same transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `edges` - Vector of edge tuples: (source, edge_type, target, is_active, weight)
+    /// * `sorted` - Whether the input is pre-sorted by (source, edge_type, target).
+    ///              Set to `true` if your data is already sorted for best performance.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of edges inserted.
+    ///
+    /// # Performance
+    ///
+    /// - Sorted data (`sorted = true`): Uses optimized insertion with minimal tree rebalancing
+    /// - Unsorted data (`sorted = false`): Chunks and sorts data internally for good performance
+    /// - Batch operations benefit from WAL group commit for higher throughput
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use manifold::column_family::ColumnFamilyDatabase;
+    /// # use manifold_graph::GraphTable;
+    /// # use uuid::Uuid;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = ColumnFamilyDatabase::open("test.db")?;
+    /// # let cf = db.column_family_or_create("graph")?;
+    /// # let write_txn = cf.begin_write()?;
+    /// # let mut graph = GraphTable::open(&write_txn, "edges")?;
+    /// let u1 = Uuid::new_v4();
+    /// let u2 = Uuid::new_v4();
+    /// let u3 = Uuid::new_v4();
+    ///
+    /// let edges = vec![
+    ///     (u1, "follows", u2, true, 1.0),
+    ///     (u1, "follows", u3, true, 0.8),
+    ///     (u2, "follows", u3, true, 0.9),
+    /// ];
+    ///
+    /// let count = graph.add_edges_batch(edges, false)?;
+    /// assert_eq!(count, 3);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn add_edges_batch(
+        &mut self,
+        edges: Vec<(Uuid, &str, Uuid, bool, f32)>,
+        sorted: bool,
+    ) -> Result<usize, StorageError> {
+        // Prepare forward table items: (source, edge_type, target) -> (is_active, weight)
+        let forward_items: Vec<((Uuid, &str, Uuid), (bool, f32))> = edges
+            .iter()
+            .map(|(source, edge_type, target, is_active, weight)| {
+                ((*source, *edge_type, *target), (*is_active, *weight))
+            })
+            .collect();
+
+        // Prepare reverse table items: (target, edge_type, source) -> (is_active, weight)
+        let reverse_items: Vec<((Uuid, &str, Uuid), (bool, f32))> = edges
+            .iter()
+            .map(|(source, edge_type, target, is_active, weight)| {
+                ((*target, *edge_type, *source), (*is_active, *weight))
+            })
+            .collect();
+
+        // Note: reverse items are NOT sorted even if forward items are,
+        // so we always use sorted=false for reverse table
+        let count = self.forward.insert_bulk(forward_items, sorted)?;
+
+        self.reverse.insert_bulk(reverse_items, false)?;
+
+        Ok(count)
     }
 
     /// Returns the number of edges in the forward table.
@@ -143,19 +223,19 @@ impl GraphTableRead {
         edge_type: &str,
         target: &Uuid,
     ) -> Result<Option<Edge>, StorageError> {
-        Ok(self.forward.get(&(*source, edge_type, *target))?.map(|guard| {
-            let (is_active, weight) = guard.value();
-            Edge::new(*source, edge_type, *target, is_active, weight)
-        }))
+        Ok(self
+            .forward
+            .get(&(*source, edge_type, *target))?
+            .map(|guard| {
+                let (is_active, weight) = guard.value();
+                Edge::new(*source, edge_type, *target, is_active, weight)
+            }))
     }
 
     /// Returns an iterator over all outgoing edges from the given source vertex.
     ///
     /// Uses a range scan on the forward table for efficiency.
-    pub fn outgoing_edges(
-        &self,
-        source: &Uuid,
-    ) -> Result<OutgoingEdgeIter<'_>, StorageError> {
+    pub fn outgoing_edges(&self, source: &Uuid) -> Result<OutgoingEdgeIter<'_>, StorageError> {
         // Range from (source, "", nil_uuid) to (source, max_str, max_uuid)
         let start = (*source, "", Uuid::nil());
         let end = (*source, "\u{FFFF}", Uuid::max());
@@ -168,16 +248,24 @@ impl GraphTableRead {
     /// Returns an iterator over all incoming edges to the given target vertex.
     ///
     /// Uses a range scan on the reverse table for efficiency.
-    pub fn incoming_edges(
-        &self,
-        target: &Uuid,
-    ) -> Result<IncomingEdgeIter<'_>, StorageError> {
+    pub fn incoming_edges(&self, target: &Uuid) -> Result<IncomingEdgeIter<'_>, StorageError> {
         // Range from (target, "", nil_uuid) to (target, max_str, max_uuid)
         let start = (*target, "", Uuid::nil());
         let end = (*target, "\u{FFFF}", Uuid::max());
 
         Ok(IncomingEdgeIter {
             inner: self.reverse.range(start..end)?,
+        })
+    }
+
+    /// Returns an iterator over all edges in the graph.
+    ///
+    /// This method iterates over the forward table only to avoid returning
+    /// duplicate edges. Use this for full-graph traversal or when you need
+    /// to process every edge exactly once.
+    pub fn iter(&self) -> Result<AllEdgesIter<'_>, StorageError> {
+        Ok(AllEdgesIter {
+            inner: self.forward.iter()?,
         })
     }
 
@@ -198,6 +286,25 @@ pub struct OutgoingEdgeIter<'a> {
 }
 
 impl<'a> Iterator for OutgoingEdgeIter<'a> {
+    type Item = Result<Edge, StorageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|result| {
+            result.map(|(key_guard, value_guard)| {
+                let (source, edge_type, target) = key_guard.value();
+                let (is_active, weight) = value_guard.value();
+                Edge::new(source, edge_type, target, is_active, weight)
+            })
+        })
+    }
+}
+
+/// Iterator over all edges in the graph.
+pub struct AllEdgesIter<'a> {
+    inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32)>,
+}
+
+impl<'a> Iterator for AllEdgesIter<'a> {
     type Item = Result<Edge, StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
