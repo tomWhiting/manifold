@@ -24,6 +24,8 @@ const WAL_HEADER_SIZE: usize = 512;
 /// Leader spins for this duration to collect additional transactions before fsync
 /// Tuned for balance: 100μs = low latency, 300μs = balanced, 500μs+ = max batching
 /// Set to 0 to disable batching window (immediate fsync when leader elected)
+/// NOTE: Testing showed batching window (50-250μs) actually REDUCES performance
+/// in our workload. Group commit already works via wait_for_sync() without spinning.
 const GROUP_COMMIT_WINDOW_MICROS: u64 = 0;
 
 /// The Write-Ahead Log journal manages durable logging of transactions.
