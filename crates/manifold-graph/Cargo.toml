@@ -12,10 +12,12 @@ keywords = ["database", "graph", "edges", "vertices", "network"]
 categories = ["database-implementations", "data-structures"]
 
 [dependencies]
-manifold = { path = "../..", version = "3.1" }
+manifold = { path = "../..", version = "3.1", features = ["uuid"] }
+uuid = "1.17.0"
 
 [dev-dependencies]
 tempfile = "3.5.0"
+uuid = { version = "1.17.0", features = ["v4"] }
 
 [lints.clippy]
 big_endian_bytes = "deny"
