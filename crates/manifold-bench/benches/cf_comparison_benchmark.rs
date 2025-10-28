@@ -31,7 +31,7 @@ fn main() {
     let _ = env_logger::try_init();
     let tmpdir = current_dir().unwrap().join(".benchmark_cf");
     let _ = fs::remove_dir_all(&tmpdir);
-    fs::create_dir(&tmpdir).unwrap();
+    let _ = fs::create_dir(&tmpdir);
 
     let tmpdir2 = tmpdir.clone();
     ctrlc::set_handler(move || {

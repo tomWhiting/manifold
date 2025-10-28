@@ -90,3 +90,7 @@ harness = false
 [[bench]]
 name = "redb_comparison_benchmark"
 harness = false
+
+[[bench]]
+name = "cf_comparison_benchmark"
+harness = false
