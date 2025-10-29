@@ -2,7 +2,7 @@ use std::env::current_dir;
 use std::{fs, process};
 use tempfile::NamedTempFile;
 
-#[expect(dead_code)]
+#[allow(dead_code)]
 mod common;
 use common::*;
 
