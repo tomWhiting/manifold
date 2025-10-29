@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use heed::{CompactionOption, EnvFlags, EnvInfo, FlagSetMode};
 use manifold::column_family::ColumnFamily;
 use manifold::{AccessGuard, Durability, ReadableDatabase, ReadableTableMetadata, TableDefinition};
@@ -15,26 +17,41 @@ use std::{fs, mem, thread};
 #[allow(dead_code)]
 const X: TableDefinition<&[u8], &[u8]> = TableDefinition::new("x");
 
+#[allow(dead_code)]
 const READ_ITERATIONS: usize = 2;
+#[allow(dead_code)]
 const BULK_ELEMENTS: usize = 5_000_000;
+#[allow(dead_code)]
 const INDIVIDUAL_WRITES: usize = 1_000;
+#[allow(dead_code)]
 const NOSYNC_WRITES: usize = 50_000;
+#[allow(dead_code)]
 const BATCH_WRITES: usize = 100;
+#[allow(dead_code)]
 const BATCH_SIZE: usize = 1000;
+#[allow(dead_code)]
 const SCAN_ITERATIONS: usize = 2;
+#[allow(dead_code)]
 const NUM_READS: usize = 1_000_000;
+#[allow(dead_code)]
 const NUM_SCANS: usize = 500_000;
+#[allow(dead_code)]
 const SCAN_LEN: usize = 10;
+#[allow(dead_code)]
 const KEY_SIZE: usize = 24;
+#[allow(dead_code)]
 const VALUE_SIZE: usize = 150;
+#[allow(dead_code)]
 const RNG_SEED: u64 = 3;
 
 pub const CACHE_SIZE: usize = 4 * 1_024 * 1_024 * 1_024; // 4GB
 
 // XXX: Awful hack because Rocksdb seems to have unbounded memory usage for bulk writes
+#[allow(dead_code)]
 const ROCKSDB_MAX_WRITES_PER_TXN: u64 = 100_000;
 
 /// Returns pairs of key, value
+#[allow(dead_code)]
 fn random_pair(rng: &mut fastrand::Rng) -> ([u8; KEY_SIZE], Vec<u8>) {
     let mut key = [0u8; KEY_SIZE];
     rng.fill(&mut key);
@@ -44,6 +61,7 @@ fn random_pair(rng: &mut fastrand::Rng) -> ([u8; KEY_SIZE], Vec<u8>) {
     (key, value)
 }
 
+#[allow(dead_code)]
 fn make_rng() -> fastrand::Rng {
     fastrand::Rng::with_seed(RNG_SEED)
 }
@@ -386,6 +404,7 @@ pub fn benchmark<T: BenchDatabase + Send + Sync>(
     results
 }
 
+#[allow(dead_code)]
 fn database_size(path: &Path) -> u64 {
     let mut size = 0u64;
     for result in walkdir::WalkDir::new(path) {
@@ -396,6 +415,7 @@ fn database_size(path: &Path) -> u64 {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
 pub enum ResultType {
     Duration(Duration),
     SizeInBytes(u64),
@@ -470,6 +490,7 @@ pub trait BenchInserter {
 
     /// Bulk insert optimization - default implementation falls back to individual inserts
     #[allow(clippy::result_unit_err)]
+    #[allow(dead_code)]
     fn insert_bulk(&mut self, items: Vec<(Vec<u8>, Vec<u8>)>) -> Result<usize, ()> {
         let count = items.len();
         for (key, value) in items {
@@ -480,6 +501,7 @@ pub trait BenchInserter {
 
     /// Bulk remove optimization - default implementation falls back to individual removes
     #[allow(clippy::result_unit_err)]
+    #[allow(dead_code)]
     fn remove_bulk(&mut self, keys: Vec<Vec<u8>>) -> Result<usize, ()> {
         let mut removed = 0;
         for key in keys {

@@ -7,7 +7,7 @@
 
 use manifold::TableDefinition as ManifoldTableDef;
 use manifold::column_family::ColumnFamilyDatabase;
-use redb2_6::{Database as RedbDatabase, ReadableTable, TableDefinition as RedbTableDef};
+use redb2_6::{Database as RedbDatabase, TableDefinition as RedbTableDef};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
@@ -18,17 +18,6 @@ const REDB_TABLE: RedbTableDef<u64, &[u8]> = RedbTableDef::new("data");
 const WARMUP_ITERATIONS: usize = 2;
 const BENCHMARK_ITERATIONS: usize = 5;
 const BATCH_SIZE: usize = 1000;
-
-fn format_duration(d: Duration) -> String {
-    let micros = d.as_micros();
-    if micros < 1000 {
-        format!("{micros}µs")
-    } else if micros < 1_000_000 {
-        format!("{:.2}ms", micros as f64 / 1000.0)
-    } else {
-        format!("{:.2}s", micros as f64 / 1_000_000.0)
-    }
-}
 
 fn format_throughput(ops: usize, duration: Duration) -> String {
     let ops_per_sec = ops as f64 / duration.as_secs_f64();

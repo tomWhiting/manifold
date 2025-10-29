@@ -12,6 +12,9 @@ authors.workspace = true
 # Common test/bench dependencies
 [dev-dependencies]
 manifold = { path = "../.." }
+manifold-vectors = { path = "../manifold-vectors" }
+manifold-graph = { path = "../manifold-graph" }
+manifold-timeseries = { path = "../manifold-timeseries" }
 rand = "0.9"
 tempfile = "3.5.0"
 walkdir = "2.5.0"
@@ -27,6 +30,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 comfy-table = "7.0.1"
 env_logger = "0.11"
 redb2_6 = { version = "=2.6.0", package = "redb" }
+uuid = { version = "1.17.0", features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 io-uring = "0.7.4"
@@ -93,4 +97,16 @@ harness = false
 
 [[bench]]
 name = "cf_comparison_benchmark"
+harness = false
+
+[[bench]]
+name = "vectors_benchmark"
+harness = false
+
+[[bench]]
+name = "graph_benchmark"
+harness = false
+
+[[bench]]
+name = "timeseries_benchmark"
 harness = false
