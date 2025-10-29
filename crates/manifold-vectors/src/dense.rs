@@ -5,22 +5,23 @@ use manifold::{
     StorageError, Table, TableDefinition, TableError, WriteTransaction,
 };
 use std::ops::Deref;
+use uuid::Uuid;
 
 /// A table storing fixed-dimension dense vectors.
 pub struct VectorTable<'txn, const DIM: usize> {
-    table: Table<'txn, &'static str, [f32; DIM]>,
+    table: Table<'txn, Uuid, [f32; DIM]>,
 }
 
 impl<'txn, const DIM: usize> VectorTable<'txn, DIM> {
     /// Opens a vector table for writing.
     pub fn open(txn: &'txn WriteTransaction, name: &str) -> Result<Self, TableError> {
-        let def: TableDefinition<&str, [f32; DIM]> = TableDefinition::new(name);
+        let def: TableDefinition<Uuid, [f32; DIM]> = TableDefinition::new(name);
         let table = txn.open_table(def)?;
         Ok(Self { table })
     }
 
     /// Inserts a vector with the given key.
-    pub fn insert(&mut self, key: &str, vector: &[f32; DIM]) -> Result<(), TableError> {
+    pub fn insert(&mut self, key: &Uuid, vector: &[f32; DIM]) -> Result<(), TableError> {
         self.table.insert(key, vector)?;
         Ok(())
     }
@@ -28,7 +29,7 @@ impl<'txn, const DIM: usize> VectorTable<'txn, DIM> {
     /// Inserts multiple vectors in a single batch operation.
     pub fn insert_batch(
         &mut self,
-        items: &[(&str, [f32; DIM])],
+        items: &[(Uuid, [f32; DIM])],
         sorted: bool,
     ) -> Result<(), StorageError> {
         self.table.insert_bulk(items.to_vec(), sorted)?;
@@ -51,13 +52,13 @@ impl<'txn, const DIM: usize> VectorTable<'txn, DIM> {
 /// This table leverages Manifold's fixed-width Value trait for arrays,
 /// which deserializes directly from memory-mapped pages.
 pub struct VectorTableRead<const DIM: usize> {
-    table: ReadOnlyTable<&'static str, [f32; DIM]>,
+    table: ReadOnlyTable<Uuid, [f32; DIM]>,
 }
 
 impl<const DIM: usize> VectorTableRead<DIM> {
     /// Opens a vector table for reading.
     pub fn open(txn: &ReadTransaction, name: &str) -> Result<Self, StorageError> {
-        let def: TableDefinition<&str, [f32; DIM]> = TableDefinition::new(name);
+        let def: TableDefinition<Uuid, [f32; DIM]> = TableDefinition::new(name);
         let table = txn.open_table(def).map_err(|e| match e {
             TableError::Storage(s) => s,
             _ => StorageError::Io(std::io::Error::other(e)),
@@ -69,7 +70,7 @@ impl<const DIM: usize> VectorTableRead<DIM> {
     ///
     /// Returns a guard that holds the vector data cached from deserialization.
     /// The vector is deserialized once when the guard is created.
-    pub fn get(&self, key: &str) -> Result<Option<VectorGuard<'_, DIM>>, StorageError> {
+    pub fn get(&self, key: &Uuid) -> Result<Option<VectorGuard<'_, DIM>>, StorageError> {
         Ok(self.table.get(key)?.map(VectorGuard::new))
     }
 
@@ -130,17 +131,16 @@ impl<const DIM: usize> Deref for VectorGuard<'_, DIM> {
 
 /// Iterator over vectors in a `VectorTableRead`.
 pub struct VectorIter<'a, const DIM: usize> {
-    inner: manifold::Range<'a, &'static str, [f32; DIM]>,
+    inner: manifold::Range<'a, Uuid, [f32; DIM]>,
 }
 
 impl<'a, const DIM: usize> Iterator for VectorIter<'a, DIM> {
-    type Item = Result<(String, VectorGuard<'a, DIM>), StorageError>;
+    type Item = Result<(Uuid, VectorGuard<'a, DIM>), StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|result| {
-            result.map(|(key_guard, value_guard)| {
-                (key_guard.value().to_string(), VectorGuard::new(value_guard))
-            })
+            result
+                .map(|(key_guard, value_guard)| (key_guard.value(), VectorGuard::new(value_guard)))
         })
     }
 }

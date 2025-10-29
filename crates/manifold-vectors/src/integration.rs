@@ -2,6 +2,7 @@
 
 use crate::dense::{VectorGuard, VectorIter};
 use manifold::StorageError;
+use uuid::Uuid;
 
 /// Trait for vector sources consumable by index builders
 ///
@@ -9,7 +10,7 @@ use manifold::StorageError;
 /// to efficiently iterate over vectors with zero-copy access.
 pub trait VectorSource<const DIM: usize> {
     /// Iterator type over vectors with zero-copy access
-    type Iter<'a>: Iterator<Item = Result<(String, VectorGuard<'a, DIM>), StorageError>>
+    type Iter<'a>: Iterator<Item = Result<(Uuid, VectorGuard<'a, DIM>), StorageError>>
     where
         Self: 'a;
 

@@ -18,70 +18,71 @@ use manifold_vectors::{
     SparseVector, SparseVectorTable, SparseVectorTableRead, VectorTable, VectorTableRead, distance,
 };
 use tessera::{TesseraDense, TesseraSparse};
+use uuid::Uuid;
 
 fn main() -> Result<()> {
     println!("=== Sparse Vector Hybrid Search Example ===\n");
 
-    // Sample documents for hybrid search
+    // Sample documents for hybrid search with UUIDs
     let documents = vec![
         (
-            "doc_001",
+            Uuid::new_v4(),
             "Machine learning algorithms learn patterns from training data to make predictions on new data.",
         ),
         (
-            "doc_002",
+            Uuid::new_v4(),
             "Deep neural networks use multiple layers to extract hierarchical features from raw input.",
         ),
         (
-            "doc_003",
+            Uuid::new_v4(),
             "Natural language processing enables computers to understand and generate human language.",
         ),
         (
-            "doc_004",
+            Uuid::new_v4(),
             "Computer vision systems analyze and interpret visual information from images and videos.",
         ),
         (
-            "doc_005",
+            Uuid::new_v4(),
             "Reinforcement learning trains agents to maximize rewards through trial and error interactions.",
         ),
         (
-            "doc_006",
+            Uuid::new_v4(),
             "Supervised learning requires labeled examples to train classification and regression models.",
         ),
         (
-            "doc_007",
+            Uuid::new_v4(),
             "Unsupervised learning discovers hidden patterns and structures in unlabeled datasets.",
         ),
         (
-            "doc_008",
+            Uuid::new_v4(),
             "Transfer learning leverages pre-trained models to solve new tasks with limited data.",
         ),
         (
-            "doc_009",
+            Uuid::new_v4(),
             "Gradient descent optimization iteratively adjusts model parameters to minimize loss functions.",
         ),
         (
-            "doc_010",
+            Uuid::new_v4(),
             "Backpropagation computes gradients through neural network layers using the chain rule.",
         ),
         (
-            "doc_011",
+            Uuid::new_v4(),
             "Convolutional neural networks apply spatial filters to extract features from image data.",
         ),
         (
-            "doc_012",
+            Uuid::new_v4(),
             "Recurrent neural networks process sequential data by maintaining hidden state across time steps.",
         ),
         (
-            "doc_013",
+            Uuid::new_v4(),
             "Transformer models use self-attention mechanisms to capture long-range dependencies in sequences.",
         ),
         (
-            "doc_014",
+            Uuid::new_v4(),
             "BERT employs bidirectional transformers to create contextual word representations for understanding.",
         ),
         (
-            "doc_015",
+            Uuid::new_v4(),
             "GPT generates text autoregressively by predicting the next token conditioned on previous context.",
         ),
     ];
@@ -130,15 +131,17 @@ fn main() -> Result<()> {
 
             // Convert sparse to SparseVector (convert usize to u32)
             let sparse_vec = SparseVector::new(
-                sparse_emb.weights.into_iter()
+                sparse_emb
+                    .weights
+                    .into_iter()
                     .map(|(idx, weight)| (idx as u32, weight))
-                    .collect()
+                    .collect(),
             );
             total_sparse_entries += sparse_vec.len();
 
             // Store both
-            dense_table.insert(doc_id, &dense_vec)?;
-            sparse_table.insert(doc_id, &sparse_vec)?;
+            dense_table.insert(&doc_id, &dense_vec)?;
+            sparse_table.insert(&doc_id, &sparse_vec)?;
         }
 
         drop(dense_table);
@@ -224,16 +227,18 @@ fn main() -> Result<()> {
             .expect("query dense dimension mismatch");
 
         let query_sparse_vec = SparseVector::new(
-            query_sparse.weights.into_iter()
+            query_sparse
+                .weights
+                .into_iter()
                 .map(|(idx, weight)| (idx as u32, weight))
-                .collect()
+                .collect(),
         );
 
         println!("  Query sparse entries: {}", query_sparse_vec.len());
         println!();
 
         // Compute dense scores
-        let mut dense_scores: Vec<(String, f32)> = Vec::new();
+        let mut dense_scores: Vec<(Uuid, f32)> = Vec::new();
         for result in dense_table.all_vectors()? {
             let (doc_id, doc_guard) = result?;
             let similarity = distance::cosine(&query_dense_vec, doc_guard.value());
@@ -241,12 +246,12 @@ fn main() -> Result<()> {
         }
 
         // Compute sparse scores using efficient sparse dot product
-        let mut sparse_scores: Vec<(String, f32)> = Vec::new();
+        let mut sparse_scores: Vec<(Uuid, f32)> = Vec::new();
         for (doc_id, _) in &documents {
-            if let Some(doc_sparse) = sparse_table.get(doc_id)? {
+            if let Some(doc_sparse) = sparse_table.get(&doc_id)? {
                 // Efficient O(m + n) sparse dot product (sorted merge)
                 let similarity = query_sparse_vec.dot(&doc_sparse);
-                sparse_scores.push((doc_id.to_string(), similarity));
+                sparse_scores.push((*doc_id, similarity));
             }
         }
 
@@ -260,7 +265,7 @@ fn main() -> Result<()> {
                 .find(|(id, _)| id == doc_id)
                 .map(|(_, text)| text)
                 .unwrap_or(&"");
-            println!("    {}. [Cosine: {:.4}] {}", rank + 1, score, doc_id);
+            println!("    {}. [Cosine: {:.4}] {:?}", rank + 1, score, doc_id);
             println!("       \"{}...\"", &doc_text[..doc_text.len().min(80)]);
         }
         println!();
@@ -275,7 +280,7 @@ fn main() -> Result<()> {
                 .find(|(id, _)| id == doc_id)
                 .map(|(_, text)| text)
                 .unwrap_or(&"");
-            println!("    {}. [Sparse dot: {:.2}] {}", rank + 1, score, doc_id);
+            println!("    {}. [Sparse dot: {:.2}] {:?}", rank + 1, score, doc_id);
             println!("       \"{}...\"", &doc_text[..doc_text.len().min(80)]);
         }
         println!();
@@ -284,7 +289,7 @@ fn main() -> Result<()> {
         let dense_weight = 0.6;
         let sparse_weight = 0.4;
 
-        let mut hybrid_scores: Vec<(String, f32, f32, f32)> = Vec::new();
+        let mut hybrid_scores: Vec<(Uuid, f32, f32, f32)> = Vec::new();
         for (doc_id, _) in &documents {
             let dense_score = dense_scores
                 .iter()
@@ -303,12 +308,7 @@ fn main() -> Result<()> {
 
             let hybrid_score = (dense_weight * dense_score) + (sparse_weight * sparse_normalized);
 
-            hybrid_scores.push((
-                doc_id.to_string(),
-                hybrid_score,
-                dense_score,
-                sparse_normalized,
-            ));
+            hybrid_scores.push((*doc_id, hybrid_score, dense_score, sparse_normalized));
         }
 
         // Sort by hybrid score
@@ -326,7 +326,7 @@ fn main() -> Result<()> {
                 .map(|(_, text)| text)
                 .unwrap_or(&"");
             println!(
-                "    {}. [Hybrid: {:.4}] (D:{:.4}, S:{:.4}) {}",
+                "    {}. [Hybrid: {:.4} = {:.4} dense + {:.4} sparse] {:?}",
                 rank + 1,
                 hybrid,
                 dense,

@@ -12,7 +12,8 @@ keywords = ["database", "vector", "embedding", "ml", "ai"]
 categories = ["database-implementations", "data-structures"]
 
 [dependencies]
-manifold = { path = "../..", version = "3.1" }
+manifold = { path = "../..", version = "3.1", features = ["uuid"] }
+uuid = { version = "1.18.1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3.5.0"

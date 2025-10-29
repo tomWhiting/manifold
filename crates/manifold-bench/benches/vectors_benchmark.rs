@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
+use uuid::Uuid;
 
 const WARMUP_ITERATIONS: usize = 1;
 const BENCHMARK_ITERATIONS: usize = 3;
@@ -96,7 +97,7 @@ fn benchmark_dense_vector_writes<const DIM: usize>(
             let mut vectors = VectorTable::<DIM>::open(&txn, "embeddings").unwrap();
 
             for i in 0..batch_size {
-                let key = format!("vec_{:08}", batch_idx * batch_size + i);
+                let key = Uuid::new_v4();
                 let vector = random_vector::<DIM>((batch_idx * batch_size + i) as u64);
                 vectors.insert(&key, &vector).unwrap();
             }
@@ -114,9 +115,9 @@ fn benchmark_batch_insert<const DIM: usize>(total_vectors: usize) -> Duration {
     let cf = db.column_family_or_create("vectors").unwrap();
 
     // Prepare batch data
-    let mut batch: Vec<(String, [f32; DIM])> = Vec::with_capacity(total_vectors);
+    let mut batch: Vec<(Uuid, [f32; DIM])> = Vec::with_capacity(total_vectors);
     for i in 0..total_vectors {
-        let key = format!("vec_{:08}", i);
+        let key = Uuid::new_v4();
         let vector = random_vector::<DIM>(i as u64);
         batch.push((key, vector));
     }
@@ -127,11 +128,7 @@ fn benchmark_batch_insert<const DIM: usize>(total_vectors: usize) -> Duration {
     {
         let mut vectors = VectorTable::<DIM>::open(&txn, "embeddings").unwrap();
 
-        // Convert to slice of tuples with &str keys
-        let batch_refs: Vec<(&str, [f32; DIM])> =
-            batch.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-
-        vectors.insert_batch(&batch_refs, false).unwrap();
+        vectors.insert_batch(&batch, false).unwrap();
     }
     txn.commit().unwrap();
 
@@ -147,15 +144,17 @@ fn benchmark_guard_reads<const DIM: usize>(
     let db = ColumnFamilyDatabase::open(tmpfile.path()).unwrap();
     let cf = db.column_family_or_create("vectors").unwrap();
 
-    // Populate data
+    // Populate data and collect keys
+    let mut keys = Vec::new();
     {
         let txn = cf.begin_write().unwrap();
         {
             let mut vectors = VectorTable::<DIM>::open(&txn, "embeddings").unwrap();
             for i in 0..num_vectors {
-                let key = format!("vec_{:08}", i);
+                let key = Uuid::new_v4();
                 let vector = random_vector::<DIM>(i as u64);
                 vectors.insert(&key, &vector).unwrap();
+                keys.push(key);
             }
         }
         txn.commit().unwrap();
@@ -168,9 +167,8 @@ fn benchmark_guard_reads<const DIM: usize>(
     let start = Instant::now();
 
     for _ in 0..reads_per_vector {
-        for i in 0..num_vectors {
-            let key = format!("vec_{:08}", i);
-            let guard = vectors.get(&key).unwrap().unwrap();
+        for key in &keys {
+            let guard = vectors.get(key).unwrap().unwrap();
             // Access the vector data through guard
             let _first = guard.value()[0];
         }
@@ -185,15 +183,17 @@ fn benchmark_full_iteration<const DIM: usize>(num_vectors: usize) -> Duration {
     let db = ColumnFamilyDatabase::open(tmpfile.path()).unwrap();
     let cf = db.column_family_or_create("vectors").unwrap();
 
-    // Populate data
+    // Pre-populate with data and collect keys
+    let mut keys = Vec::new();
     {
         let txn = cf.begin_write().unwrap();
         {
             let mut vectors = VectorTable::<DIM>::open(&txn, "embeddings").unwrap();
-            for i in 0..num_vectors {
-                let key = format!("vec_{:08}", i);
-                let vector = random_vector::<DIM>(i as u64);
+            for j in 0..10000 {
+                let key = Uuid::new_v4();
+                let vector = random_vector::<DIM>(j as u64);
                 vectors.insert(&key, &vector).unwrap();
+                keys.push(key);
             }
         }
         txn.commit().unwrap();
@@ -231,7 +231,7 @@ fn benchmark_distance_computation<const DIM: usize>(
         {
             let mut vectors = VectorTable::<DIM>::open(&txn, "embeddings").unwrap();
             for i in 0..num_vectors {
-                let key = format!("vec_{:08}", i);
+                let key = Uuid::new_v4();
                 let mut vector = random_vector::<DIM>(i as u64);
                 normalize(&mut vector);
                 vectors.insert(&key, &vector).unwrap();
@@ -302,7 +302,7 @@ fn benchmark_sustained_writes<const DIM: usize>(
                     let mut vectors = VectorTable::<DIM>::open(&txn, "embeddings").unwrap();
 
                     for i in 0..batch_size {
-                        let key = format!("t{}_vec_{:08}", thread_id, counter * batch_size + i);
+                        let key = Uuid::new_v4();
                         let vector = random_vector::<DIM>((counter * batch_size + i) as u64);
                         vectors.insert(&key, &vector).unwrap();
                     }
@@ -346,7 +346,8 @@ fn benchmark_mixed_workload<const DIM: usize>(
     let tmpfile = NamedTempFile::new().unwrap();
     let db = Arc::new(ColumnFamilyDatabase::open(tmpfile.path()).unwrap());
 
-    // Create and populate CFs
+    // Create and populate CFs with shared keys
+    let mut all_keys = Vec::new();
     for i in 0..num_threads {
         db.create_column_family(&format!("thread_{}", i), Some(100 * 1024 * 1024))
             .unwrap();
@@ -356,13 +357,17 @@ fn benchmark_mixed_workload<const DIM: usize>(
         {
             let mut vectors = VectorTable::<DIM>::open(&txn, "embeddings").unwrap();
             for j in 0..10000 {
-                let key = format!("vec_{:08}", j);
+                let key = Uuid::new_v4();
                 let vector = random_vector::<DIM>(j as u64);
                 vectors.insert(&key, &vector).unwrap();
+                if i == 0 {
+                    all_keys.push(key);
+                }
             }
         }
         txn.commit().unwrap();
     }
+    let all_keys = Arc::new(all_keys);
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let total_reads = Arc::new(AtomicUsize::new(0));
@@ -376,6 +381,7 @@ fn benchmark_mixed_workload<const DIM: usize>(
         let stop = stop_flag.clone();
         let reads = total_reads.clone();
         let writes = total_writes.clone();
+        let keys = all_keys.clone();
 
         let handle = std::thread::spawn(move || {
             let cf = db_clone
@@ -393,8 +399,8 @@ fn benchmark_mixed_workload<const DIM: usize>(
                     let vectors = VectorTableRead::<DIM>::open(&txn, "embeddings").unwrap();
 
                     for _ in 0..100 {
-                        let key = format!("vec_{:08}", counter % 10000);
-                        if let Ok(Some(guard)) = vectors.get(&key) {
+                        let key = &keys[(counter as usize) % keys.len()];
+                        if let Ok(Some(guard)) = vectors.get(key) {
                             let _first = guard.value()[0];
                         }
                         counter += 1;
@@ -406,7 +412,7 @@ fn benchmark_mixed_workload<const DIM: usize>(
                         let mut vectors = VectorTable::<DIM>::open(&txn, "embeddings").unwrap();
 
                         for _ in 0..100 {
-                            let key = format!("vec_{:08}", counter % 10000);
+                            let key = Uuid::new_v4();
                             let vector = random_vector::<DIM>(counter);
                             vectors.insert(&key, &vector).unwrap();
                             counter += 1;

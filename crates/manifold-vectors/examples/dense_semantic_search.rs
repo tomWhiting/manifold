@@ -15,87 +15,91 @@ use anyhow::Result;
 use manifold::column_family::ColumnFamilyDatabase;
 use manifold_vectors::{VectorTable, VectorTableRead, distance};
 use tessera::TesseraDense;
+use uuid::Uuid;
 
 fn main() -> Result<()> {
     println!("=== Dense Vector Semantic Search Example ===\n");
 
-    // Sample document corpus
+    // Sample document corpus with UUIDs
     let documents = vec![
         (
-            "doc_001",
+            Uuid::new_v4(),
             "Machine learning is a subset of artificial intelligence",
         ),
         (
-            "doc_002",
+            Uuid::new_v4(),
             "Deep learning uses neural networks with multiple layers",
         ),
         (
-            "doc_003",
+            Uuid::new_v4(),
             "Natural language processing enables computers to understand text",
         ),
         (
-            "doc_004",
+            Uuid::new_v4(),
             "Computer vision allows machines to interpret visual information",
         ),
         (
-            "doc_005",
+            Uuid::new_v4(),
             "Reinforcement learning trains agents through rewards and penalties",
         ),
         (
-            "doc_006",
+            Uuid::new_v4(),
             "Supervised learning requires labeled training data",
         ),
         (
-            "doc_007",
+            Uuid::new_v4(),
             "Unsupervised learning finds patterns in unlabeled data",
         ),
         (
-            "doc_008",
+            Uuid::new_v4(),
             "Transfer learning reuses models trained on different tasks",
         ),
         (
-            "doc_009",
+            Uuid::new_v4(),
             "Gradient descent optimizes neural network weights",
         ),
         (
-            "doc_010",
+            Uuid::new_v4(),
             "Backpropagation calculates gradients for training",
         ),
         (
-            "doc_011",
+            Uuid::new_v4(),
             "Convolutional networks excel at image recognition tasks",
         ),
         (
-            "doc_012",
+            Uuid::new_v4(),
             "Recurrent networks process sequential data effectively",
         ),
         (
-            "doc_013",
+            Uuid::new_v4(),
             "Transformers use attention mechanisms for language tasks",
         ),
         (
-            "doc_014",
+            Uuid::new_v4(),
             "BERT revolutionized natural language understanding",
         ),
         (
-            "doc_015",
+            Uuid::new_v4(),
             "GPT models generate coherent and contextual text",
         ),
-        ("doc_016", "Embeddings represent words as dense vectors"),
         (
-            "doc_017",
+            Uuid::new_v4(),
+            "Embeddings represent words as dense vectors",
+        ),
+        (
+            Uuid::new_v4(),
             "Semantic search finds documents by meaning not keywords",
         ),
         (
-            "doc_018",
+            Uuid::new_v4(),
             "Vector databases store and query high-dimensional embeddings",
         ),
         (
-            "doc_019",
+            Uuid::new_v4(),
             "Retrieval augmented generation combines search with LLMs",
         ),
         (
-            "doc_020",
+            Uuid::new_v4(),
             "Fine-tuning adapts pre-trained models to specific domains",
         ),
     ];
@@ -136,7 +140,7 @@ fn main() -> Result<()> {
                 .collect::<Vec<_>>()
                 .try_into()
                 .expect("embedding dimension mismatch");
-            vectors.insert(doc_id, &embedding)?;
+            vectors.insert(&doc_id, &embedding)?;
         }
 
         drop(vectors);
@@ -171,7 +175,7 @@ fn main() -> Result<()> {
             .expect("query embedding dimension mismatch");
 
         // Compute similarity with all documents
-        let mut scores: Vec<(String, f32)> = Vec::new();
+        let mut scores: Vec<(Uuid, f32)> = Vec::new();
 
         for result in vectors.all_vectors()? {
             let (doc_id, doc_guard) = result?;
@@ -190,7 +194,7 @@ fn main() -> Result<()> {
                 .find(|(id, _)| id == doc_id)
                 .map(|(_, text)| text)
                 .unwrap_or(&"");
-            println!("  {}. [Score: {:.4}] {}", rank + 1, score, doc_id);
+            println!("  {}. [Score: {:.4}] {:?}", rank + 1, score, doc_id);
             println!("     \"{}\"", doc_text);
         }
         println!();

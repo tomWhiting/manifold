@@ -20,17 +20,20 @@
 //! use manifold::column_family::ColumnFamilyDatabase;
 //! use manifold_vectors::{VectorTable, distance};
 //! use manifold_vectors::dense::VectorTableRead;
+//! use uuid::Uuid;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let db = ColumnFamilyDatabase::open("my.db")?;
 //! let cf = db.column_family_or_create("embeddings")?;
+//!
+//! let doc_id = Uuid::new_v4();
 //!
 //! // Write vectors
 //! {
 //!     let write_txn = cf.begin_write()?;
 //!     let mut vectors = VectorTable::<768>::open(&write_txn, "vectors")?;
 //!     let embedding = [0.1f32; 768];
-//!     vectors.insert("doc_1", &embedding)?;
+//!     vectors.insert(&doc_id, &embedding)?;
 //!     drop(vectors);
 //!     write_txn.commit()?;
 //! }
@@ -39,7 +42,7 @@
 //! let read_txn = cf.begin_read()?;
 //! let vectors = VectorTableRead::<768>::open(&read_txn, "vectors")?;
 //!
-//! if let Some(guard) = vectors.get("doc_1")? {
+//! if let Some(guard) = vectors.get(&doc_id)? {
 //!     // guard provides zero-copy access to mmap'd data
 //!     let query = [0.1f32; 768];
 //!     let similarity = distance::cosine(&query, guard.value());

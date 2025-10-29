@@ -3,6 +3,7 @@ use manifold::{
     ReadOnlyTable, ReadTransaction, ReadableTableMetadata, StorageError, Table, TableDefinition,
     TableError, WriteTransaction,
 };
+use uuid::Uuid;
 
 /// A sparse vector represented as (index, value) pairs.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,19 +53,19 @@ impl SparseVector {
 
 /// Table for storing sparse vectors
 pub struct SparseVectorTable<'txn> {
-    table: Table<'txn, &'static str, Vec<(u32, f32)>>,
+    table: Table<'txn, Uuid, Vec<(u32, f32)>>,
 }
 
 impl<'txn> SparseVectorTable<'txn> {
     /// Opens a sparse vector table for writing
     pub fn open(txn: &'txn WriteTransaction, name: &str) -> Result<Self, TableError> {
-        let def: TableDefinition<&str, Vec<(u32, f32)>> = TableDefinition::new(name);
+        let def: TableDefinition<Uuid, Vec<(u32, f32)>> = TableDefinition::new(name);
         let table = txn.open_table(def)?;
         Ok(Self { table })
     }
 
     /// Inserts a sparse vector
-    pub fn insert(&mut self, key: &str, vector: &SparseVector) -> Result<(), TableError> {
+    pub fn insert(&mut self, key: &Uuid, vector: &SparseVector) -> Result<(), TableError> {
         self.table.insert(key, &vector.entries)?;
         Ok(())
     }
@@ -82,13 +83,13 @@ impl<'txn> SparseVectorTable<'txn> {
 
 /// Read-only sparse vector table
 pub struct SparseVectorTableRead {
-    table: ReadOnlyTable<&'static str, Vec<(u32, f32)>>,
+    table: ReadOnlyTable<Uuid, Vec<(u32, f32)>>,
 }
 
 impl SparseVectorTableRead {
     /// Opens a sparse vector table for reading
     pub fn open(txn: &ReadTransaction, name: &str) -> Result<Self, StorageError> {
-        let def: TableDefinition<&str, Vec<(u32, f32)>> = TableDefinition::new(name);
+        let def: TableDefinition<Uuid, Vec<(u32, f32)>> = TableDefinition::new(name);
         let table = txn.open_table(def).map_err(|e| match e {
             TableError::Storage(s) => s,
             _ => StorageError::Io(std::io::Error::other(e)),
@@ -97,7 +98,7 @@ impl SparseVectorTableRead {
     }
 
     /// Retrieves a sparse vector by key
-    pub fn get(&self, key: &str) -> Result<Option<SparseVector>, StorageError> {
+    pub fn get(&self, key: &Uuid) -> Result<Option<SparseVector>, StorageError> {
         Ok(self.table.get(key)?.map(|guard| SparseVector {
             entries: guard.value().clone(),
         }))

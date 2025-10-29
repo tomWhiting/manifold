@@ -1,8 +1,28 @@
 # Hyperspatial Ecosystem Redesign
 
 **Date:** 2024-10-29  
-**Status:** Design Document  
+**Status:** Phase 2 Implementation In Progress  
+**Current Phase:** Phase 2A Complete (Week 1 - Storage Scaffolding)  
+**Branch:** storage-rewrite  
 **Goal:** Reorganize and rebuild the Hyperspatial ecosystem with clear component boundaries, simplified architecture, and Manifold as the storage foundation.
+
+---
+
+## Phase 2 Status Update (2025-01-XX)
+
+**Week 1 Complete**: ✅ Storage module scaffolding done
+- Old `persistence/` moved to `_old_persistence/` (reference only)
+- New `storage/` module created with Manifold integration
+- 12 files (1,489 lines) with comprehensive documentation
+- Storage-specific errors separated from domain types
+- StorageConfig with 5 presets (Default, Small, Large, ReadHeavy, WriteHeavy)
+- All interfaces defined, ready for Week 2 implementation
+
+**Next**: Week 2 - Entity & Property CRUD implementation
+
+See **Appendix A: Module Structure** for actual implemented file layout.
+
+---
 
 ---
 
@@ -875,7 +895,10 @@ for snapshot in trajectories.range(entity_id, start_time, end_time)? {
 
 ## Appendix A: Module Structure
 
-### Hyperspatial Module Map (New Structure)
+### Hyperspatial Module Map (Actual Implementation - Phase 2)
+
+**Status**: Phase 2A Complete (Week 1) - Storage scaffolding done  
+**Branch**: storage-rewrite
 
 ```
 hyperspatial/
@@ -883,7 +906,29 @@ hyperspatial/
 │   ├── lib.rs                    # Public API
 │   ├── error.rs                  # Error types
 │   │
-│   ├── hyperbolic/              # Core hyperbolic operations
+│   ├── types/                    # Core domain types (UNCHANGED)
+│   │   ├── mod.rs               # Type exports
+│   │   ├── entity.rs            # Entity, EntityId, Edge, PropertyValue, MeasureValue
+│   │   └── value.rs             # Value enum for schema-aware storage
+│   │
+│   ├── storage/                 # NEW: Manifold-based storage layer
+│   │   ├── mod.rs               # Module root (165 lines)
+│   │   ├── collection.rs        # ManifoldCollection wrapper (380 lines)
+│   │   ├── config.rs            # StorageConfig with presets (282 lines)
+│   │   ├── error.rs             # Storage-specific errors (104 lines)
+│   │   ├── entities.rs          # Entity CRUD (TODO: Week 2)
+│   │   ├── properties.rs        # Property CRUD (TODO: Week 2)
+│   │   ├── graph.rs             # manifold-graph wrapper (TODO: Week 3)
+│   │   ├── vectors.rs           # manifold-vectors wrapper (TODO: Week 4)
+│   │   ├── timeseries.rs        # manifold-timeseries wrapper (TODO: Week 5)
+│   │   ├── measures.rs          # Cascade value storage (TODO: Week 5)
+│   │   ├── index.rs             # Master routing index (TODO: Week 2)
+│   │   └── utils.rs             # Helper functions
+│   │
+│   ├── _old_persistence/        # REFERENCE: Old redb-based implementation
+│   │   └── [100+ files moved here - 528 redb API references]
+│   │
+│   ├── hyperbolic/              # Core hyperbolic operations (KEEP)
 │   │   ├── mod.rs
 │   │   ├── geometry/            # Geometric operations
 │   │   │   ├── mod.rs
@@ -929,18 +974,7 @@ hyperspatial/
 │   │   ├── processors/          # Stream processors
 │   │   └── triggers/            # Trigger system
 │   │
-│   ├── storage/                 # Manifold integration (NEW)
-│   │   ├── mod.rs
-│   │   ├── router.rs            # Multi-collection routing
-│   │   ├── collection.rs        # Collection management
-│   │   ├── entities.rs          # Entity storage (ColumnFamily with UUID keys)
-│   │   ├── properties.rs        # Property storage (ColumnFamily, composite keys)
-│   │   ├── vectors.rs           # Vector registry (manifold-vectors)
-│   │   ├── timeseries.rs        # Time series (manifold-timeseries)
-│   │   ├── graphs.rs            # Graph storage (manifold-graph)
-│   │   └── cache.rs             # Cache layers (LRU)
-│   │
-│   ├── query/                   # HyperQL integration (keep existing)
+│   ├── query/                   # HyperQL integration (KEEP)
 │   │   ├── mod.rs
 │   │   ├── hyperql/             # HyperQL-specific
 │   │   │   ├── datasource.rs    # DataSource implementation
@@ -1008,6 +1042,32 @@ hyperspatial/
         │   ├── formatter/       # Output formatters
         │   └── repl/            # REPL implementation
         └── Cargo.toml
+```
+
+**Key Changes from Original Plan**:
+
+1. **Storage Module**: Actual implementation uses clean separation:
+   - Domain types stay in `types/` (Entity, PropertyValue, etc.)
+   - Storage-specific code in `storage/` (errors, config, operations)
+   - No duplication between modules
+
+2. **Old Code Preserved**: `_old_persistence/` contains all 528 redb references
+   as reference material (not to be copied)
+
+3. **Configuration System**: `StorageConfig` with 5 presets (Default, Small,
+   Large, ReadHeavy, WriteHeavy) and builder pattern
+
+4. **Module Organization**: Clear TODO markers for each week of Phase 2:
+   - Week 2: entities.rs, properties.rs, index.rs
+   - Week 3: graph.rs (manifold-graph integration)
+   - Week 4: vectors.rs (manifold-vectors integration)
+   - Week 5: timeseries.rs, measures.rs (manifold-timeseries integration)
+   - Week 6: Router integration, testing
+
+**Reference Documents**:
+- Design: `docs/NEW_STORAGE_ARCHITECTURE.md` (737 lines)
+- Implementation plan: `.project/phases/phase-2/REWRITE_APPROACH.md` (315 lines)
+- Progress tracking: `.project/phases/phase-2/WEEK1_PROGRESS.md` (281 lines)
 ```
 
 ### HyperQL Module Map (Refactored)

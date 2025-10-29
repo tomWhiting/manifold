@@ -16,50 +16,51 @@ use anyhow::Result;
 use manifold::column_family::ColumnFamilyDatabase;
 use manifold_vectors::{MultiVectorTable, MultiVectorTableRead};
 use tessera::{QuantizationConfig, TesseraMultiVector};
+use uuid::Uuid;
 
 fn main() -> Result<()> {
     println!("=== Multi-Vector ColBERT Example ===\n");
 
-    // Sample passages for passage retrieval
+    // Sample passages for passage retrieval with UUIDs
     let passages = vec![
         (
-            "passage_001",
+            Uuid::new_v4(),
             "Neural networks consist of interconnected layers of artificial neurons that process information through weighted connections.",
         ),
         (
-            "passage_002",
+            Uuid::new_v4(),
             "Backpropagation is the fundamental algorithm for training neural networks by computing gradients through the chain rule.",
         ),
         (
-            "passage_003",
+            Uuid::new_v4(),
             "Attention mechanisms allow models to focus on relevant parts of the input when making predictions.",
         ),
         (
-            "passage_004",
+            Uuid::new_v4(),
             "Transformers use self-attention to process sequences in parallel without recurrent connections.",
         ),
         (
-            "passage_005",
+            Uuid::new_v4(),
             "BERT uses bidirectional transformers to create contextualized word representations for language understanding.",
         ),
         (
-            "passage_006",
+            Uuid::new_v4(),
             "GPT models generate text autoregressively by predicting the next token given previous context.",
         ),
         (
-            "passage_007",
+            Uuid::new_v4(),
             "Word embeddings map discrete words to continuous vector spaces where semantic similarity is preserved.",
         ),
         (
-            "passage_008",
+            Uuid::new_v4(),
             "Fine-tuning adapts pre-trained models to specific downstream tasks using task-specific data.",
         ),
         (
-            "passage_009",
+            Uuid::new_v4(),
             "Retrieval augmented generation combines information retrieval with language model generation for factual accuracy.",
         ),
         (
-            "passage_010",
+            Uuid::new_v4(),
             "Vector similarity search finds semantically related documents using cosine distance or dot product.",
         ),
     ];
@@ -117,7 +118,7 @@ fn main() -> Result<()> {
                 vectors_to_store.push(token_vec);
             }
 
-            vectors.insert(passage_id, &vectors_to_store)?;
+            vectors.insert(&passage_id, &vectors_to_store)?;
         }
 
         drop(vectors);
@@ -131,7 +132,7 @@ fn main() -> Result<()> {
     );
     println!("Token distribution:");
     for (passage_id, count) in &token_counts {
-        println!("  {} → {} tokens", passage_id, count);
+        println!("  {:?} → {} tokens", passage_id, count);
     }
     println!();
 
@@ -175,10 +176,10 @@ fn main() -> Result<()> {
         println!("  Query tokens: {}", query_embeddings.num_tokens);
 
         // Compute MaxSim with all passages
-        let mut scores: Vec<(String, f32)> = Vec::new();
+        let mut scores: Vec<(Uuid, f32)> = Vec::new();
 
         for (passage_id, _) in &passages {
-            if let Some(doc_vectors) = vectors.get(passage_id)? {
+            if let Some(doc_vectors) = vectors.get(&passage_id)? {
                 // Compute MaxSim: for each query token, find max similarity with doc tokens
                 let mut maxsim_score = 0.0;
 
@@ -198,7 +199,7 @@ fn main() -> Result<()> {
                     maxsim_score += max_sim;
                 }
 
-                scores.push((passage_id.to_string(), maxsim_score));
+                scores.push((*passage_id, maxsim_score));
             }
         }
 
@@ -213,7 +214,7 @@ fn main() -> Result<()> {
                 .find(|(id, _)| id == passage_id)
                 .map(|(_, text)| text)
                 .unwrap_or(&"");
-            println!("    {}. [MaxSim: {:.2}] {}", rank + 1, score, passage_id);
+            println!("    {}. [MaxSim: {:.2}] {:?}", rank + 1, score, passage_id);
             println!("       \"{}\"", passage_text);
         }
         println!();
