@@ -36,6 +36,30 @@ impl<'txn, const DIM: usize> VectorTable<'txn, DIM> {
         Ok(())
     }
 
+    /// Removes a vector by key.
+    ///
+    /// Returns the removed vector if it existed, or None if the key was not found.
+    pub fn remove(&mut self, key: &Uuid) -> Result<Option<VectorGuard<'_, DIM>>, StorageError> {
+        match self.table.remove(key) {
+            Ok(Some(guard)) => {
+                let value_cached = guard.value();
+                Ok(Some(VectorGuard {
+                    value_cached,
+                    _guard: guard,
+                }))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Removes multiple vectors in a single batch operation.
+    ///
+    /// Returns the number of vectors actually removed.
+    pub fn remove_bulk(&mut self, keys: &[Uuid]) -> Result<usize, StorageError> {
+        self.table.remove_bulk(keys.iter().copied())
+    }
+
     /// Returns the number of vectors stored in this table.
     pub fn len(&self) -> Result<u64, StorageError> {
         self.table.len()

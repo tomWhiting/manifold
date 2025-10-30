@@ -141,46 +141,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut graph = GraphTable::open(&write_txn, "knowledge")?;
 
         #[allow(clippy::vec_init_then_push)]
-        let now = manifold_graph::edge::current_timestamp_nanos();
         let relationships = {
             let mut relationships = vec![];
 
             // Oppenheimer relationships
-            relationships.push((nolan.id(), "directed", oppenheimer.id(), true, 1.0, now));
-            relationships.push((cillian.id(), "acted_in", oppenheimer.id(), true, 1.0, now));
-            relationships.push((emily.id(), "acted_in", oppenheimer.id(), true, 0.9, now));
-            relationships.push((rdj.id(), "acted_in", oppenheimer.id(), true, 0.95, now));
-            relationships.push((matt.id(), "acted_in", oppenheimer.id(), true, 0.7, now));
-            relationships.push((florence.id(), "acted_in", oppenheimer.id(), true, 0.8, now));
-            relationships.push((oppenheimer.id(), "produced_by", universal.id(), true, 1.0, now));
-            relationships.push((oppenheimer.id(), "produced_by", syncopy.id(), true, 1.0, now));
-            relationships.push((oppenheimer.id(), "genre_of", drama.id(), true, 1.0, now));
-            relationships.push((oppenheimer.id(), "genre_of", history.id(), true, 1.0, now));
-            relationships.push((oppenheimer.id(), "genre_of", thriller.id(), true, 0.8, now));
+            relationships.push((nolan.id(), "directed", oppenheimer.id(), true, 1.0));
+            relationships.push((cillian.id(), "acted_in", oppenheimer.id(), true, 1.0));
+            relationships.push((emily.id(), "acted_in", oppenheimer.id(), true, 0.9));
+            relationships.push((rdj.id(), "acted_in", oppenheimer.id(), true, 0.95));
+            relationships.push((matt.id(), "acted_in", oppenheimer.id(), true, 0.7));
+            relationships.push((florence.id(), "acted_in", oppenheimer.id(), true, 0.8));
+            relationships.push((oppenheimer.id(), "produced_by", universal.id(), true, 1.0));
+            relationships.push((oppenheimer.id(), "produced_by", syncopy.id(), true, 1.0));
+            relationships.push((oppenheimer.id(), "genre_of", drama.id(), true, 1.0));
+            relationships.push((oppenheimer.id(), "genre_of", history.id(), true, 1.0));
+            relationships.push((oppenheimer.id(), "genre_of", thriller.id(), true, 0.8));
 
             // Inception relationships
-            relationships.push((nolan.id(), "directed", inception.id(), true, 1.0, now));
-            relationships.push((cillian.id(), "acted_in", inception.id(), true, 0.7, now));
-            relationships.push((inception.id(), "produced_by", warner.id(), true, 1.0, now));
-            relationships.push((inception.id(), "produced_by", syncopy.id(), true, 1.0, now));
-            relationships.push((inception.id(), "genre_of", scifi.id(), true, 1.0, now));
-            relationships.push((inception.id(), "genre_of", thriller.id(), true, 0.9, now));
+            relationships.push((nolan.id(), "directed", inception.id(), true, 1.0));
+            relationships.push((cillian.id(), "acted_in", inception.id(), true, 0.7));
+            relationships.push((inception.id(), "produced_by", warner.id(), true, 1.0));
+            relationships.push((inception.id(), "produced_by", syncopy.id(), true, 1.0));
+            relationships.push((inception.id(), "genre_of", scifi.id(), true, 1.0));
+            relationships.push((inception.id(), "genre_of", thriller.id(), true, 0.9));
 
             // Interstellar relationships
-            relationships.push((nolan.id(), "directed", interstellar.id(), true, 1.0, now));
-            relationships.push((matt.id(), "acted_in", interstellar.id(), true, 1.0, now));
-            relationships.push((interstellar.id(), "produced_by", warner.id(), true, 1.0, now));
-            relationships.push((interstellar.id(), "produced_by", syncopy.id(), true, 1.0, now));
-            relationships.push((interstellar.id(), "genre_of", scifi.id(), true, 1.0, now));
-            relationships.push((interstellar.id(), "genre_of", drama.id(), true, 0.8, now));
+            relationships.push((nolan.id(), "directed", interstellar.id(), true, 1.0));
+            relationships.push((matt.id(), "acted_in", interstellar.id(), true, 1.0));
+            relationships.push((interstellar.id(), "produced_by", warner.id(), true, 1.0));
+            relationships.push((interstellar.id(), "produced_by", syncopy.id(), true, 1.0));
+            relationships.push((interstellar.id(), "genre_of", scifi.id(), true, 1.0));
+            relationships.push((interstellar.id(), "genre_of", drama.id(), true, 0.8));
 
             // Dunkirk relationships
-            relationships.push((nolan.id(), "directed", dunkirk.id(), true, 1.0, now));
-            relationships.push((dunkirk.id(), "produced_by", warner.id(), true, 1.0, now));
-            relationships.push((dunkirk.id(), "produced_by", syncopy.id(), true, 1.0, now));
-            relationships.push((dunkirk.id(), "genre_of", war.id(), true, 1.0, now));
-            relationships.push((dunkirk.id(), "genre_of", history.id(), true, 1.0, now));
-            relationships.push((dunkirk.id(), "genre_of", thriller.id(), true, 0.7, now));
+            relationships.push((nolan.id(), "directed", dunkirk.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "produced_by", warner.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "produced_by", syncopy.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "genre_of", war.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "genre_of", history.id(), true, 1.0));
+            relationships.push((dunkirk.id(), "genre_of", thriller.id(), true, 0.7));
 
             relationships
         };

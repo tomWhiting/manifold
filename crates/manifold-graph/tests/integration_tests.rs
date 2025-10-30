@@ -21,11 +21,13 @@ fn test_basic_edge_operations() {
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
 
         graph
-            .add_edge(&user1, "follows", &user2, true, 1.0)
+            .add_edge(&user1, "follows", &user2, true, 1.0, None)
             .unwrap();
-        graph.add_edge(&user1, "knows", &user3, true, 0.5).unwrap();
         graph
-            .add_edge(&user2, "follows", &user3, true, 1.0)
+            .add_edge(&user1, "knows", &user3, true, 0.5, None)
+            .unwrap();
+        graph
+            .add_edge(&user2, "follows", &user3, true, 1.0, None)
             .unwrap();
 
         drop(graph);
@@ -78,7 +80,7 @@ fn test_bidirectional_consistency() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
         graph
-            .add_edge(&user1, "follows", &user2, true, 1.0)
+            .add_edge(&user1, "follows", &user2, true, 1.0, None)
             .unwrap();
         drop(graph);
         write_txn.commit().unwrap();
@@ -124,7 +126,7 @@ fn test_remove_edge() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
         graph
-            .add_edge(&user1, "follows", &user2, true, 1.0)
+            .add_edge(&user1, "follows", &user2, true, 1.0, None)
             .unwrap();
         graph.remove_edge(&user1, "follows", &user2).unwrap();
         drop(graph);
@@ -161,7 +163,7 @@ fn test_update_edge() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
         graph
-            .add_edge(&user1, "follows", &user2, true, 1.0)
+            .add_edge(&user1, "follows", &user2, true, 1.0, None)
             .unwrap();
         drop(graph);
         write_txn.commit().unwrap();
@@ -203,9 +205,11 @@ fn test_edge_type_filtering() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
         graph
-            .add_edge(&user1, "follows", &user2, true, 1.0)
+            .add_edge(&user1, "follows", &user2, true, 1.0, None)
             .unwrap();
-        graph.add_edge(&user1, "blocks", &user3, true, 1.0).unwrap();
+        graph
+            .add_edge(&user1, "blocks", &user3, true, 1.0, None)
+            .unwrap();
         drop(graph);
         write_txn.commit().unwrap();
     }
@@ -272,12 +276,13 @@ fn test_batch_insertion_unsorted() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
 
+        let now = manifold_graph::edge::current_timestamp_nanos();
         let edges = vec![
-            (u3, "follows", u1, true, 0.8),
-            (u1, "follows", u2, true, 1.0),
-            (u4, "follows", u2, true, 0.6),
-            (u2, "follows", u3, true, 0.9),
-            (u1, "knows", u4, true, 0.5),
+            (u3, "follows", u1, true, 0.8, now),
+            (u1, "follows", u2, true, 1.0, now),
+            (u4, "follows", u2, true, 0.6, now),
+            (u2, "follows", u3, true, 0.9, now),
+            (u1, "knows", u4, true, 0.5, now),
         ];
 
         let count = graph.add_edges_batch(&edges, false).unwrap();
@@ -334,11 +339,12 @@ fn test_batch_insertion_sorted() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
 
+        let now = manifold_graph::edge::current_timestamp_nanos();
         // Edges sorted by (source, edge_type, target)
         let edges = vec![
-            (u1, "follows", u2, true, 1.0),
-            (u1, "follows", u3, true, 0.8),
-            (u2, "follows", u3, true, 0.9),
+            (u1, "follows", u2, true, 1.0, now),
+            (u1, "follows", u3, true, 0.8, now),
+            (u2, "follows", u3, true, 0.9, now),
         ];
 
         let count = graph.add_edges_batch(&edges, true).unwrap();
@@ -366,7 +372,7 @@ fn test_batch_insertion_empty() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
 
-        let edges: Vec<(Uuid, &str, Uuid, bool, f32)> = vec![];
+        let edges: Vec<(Uuid, &str, Uuid, bool, f32, u64)> = vec![];
         let count = graph.add_edges_batch(&edges, false).unwrap();
         assert_eq!(count, 0);
 
@@ -396,11 +402,12 @@ fn test_full_graph_iteration() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
 
+        let now = manifold_graph::edge::current_timestamp_nanos();
         let edges = vec![
-            (u1, "follows", u2, true, 1.0),
-            (u1, "follows", u3, true, 0.8),
-            (u2, "follows", u3, true, 0.9),
-            (u3, "knows", u1, false, 0.5),
+            (u1, "follows", u2, true, 1.0, now),
+            (u1, "follows", u3, true, 0.8, now),
+            (u2, "follows", u3, true, 0.9, now),
+            (u3, "knows", u1, false, 0.5, now),
         ];
 
         graph.add_edges_batch(&edges, false).unwrap();
@@ -447,7 +454,9 @@ fn test_edge_source_trait() {
     {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
-        graph.add_edge(&u1, "follows", &u2, true, 1.0).unwrap();
+        graph
+            .add_edge(&u1, "follows", &u2, true, 1.0, None)
+            .unwrap();
         drop(graph);
         write_txn.commit().unwrap();
     }
@@ -481,9 +490,10 @@ fn test_batch_with_duplicates() {
         let write_txn = cf.begin_write().unwrap();
         let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
 
+        let now = manifold_graph::edge::current_timestamp_nanos();
         let edges = vec![
-            (u1, "follows", u2, true, 1.0),
-            (u1, "follows", u2, false, 0.5), // Duplicate, should overwrite
+            (u1, "follows", u2, true, 1.0, now),
+            (u1, "follows", u2, false, 0.5, now), // Duplicate, should overwrite
         ];
 
         let count = graph.add_edges_batch(&edges, false).unwrap();
@@ -502,4 +512,154 @@ fn test_batch_with_duplicates() {
     let edge = graph.get_edge(&u1, "follows", &u2).unwrap().unwrap();
     assert!(!edge.is_active); // Should have the second value
     assert_eq!(edge.weight, 0.5);
+}
+
+#[test]
+fn test_temporal_edge_lifecycle() {
+    use manifold_graph::edge::current_timestamp_nanos;
+    use std::thread;
+    use std::time::Duration;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("graph.db");
+    let db = ColumnFamilyDatabase::open(&db_path).unwrap();
+    let cf = db.column_family_or_create("test").unwrap();
+
+    let u1 = Uuid::new_v4();
+    let u2 = Uuid::new_v4();
+
+    let time_before_create = current_timestamp_nanos();
+    thread::sleep(Duration::from_millis(10));
+
+    // Create edge
+    let time_created;
+    {
+        let write_txn = cf.begin_write().unwrap();
+        let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
+        time_created = current_timestamp_nanos();
+        graph
+            .add_edge(&u1, "follows", &u2, true, 1.0, Some(time_created))
+            .unwrap();
+        drop(graph);
+        write_txn.commit().unwrap();
+    }
+
+    thread::sleep(Duration::from_millis(10));
+    let time_after_create = current_timestamp_nanos();
+
+    // Verify edge exists at current time
+    {
+        let read_txn = cf.begin_read().unwrap();
+        let graph = GraphTableRead::open(&read_txn, "edges").unwrap();
+
+        // Edge should not exist before creation
+        let edge_before = graph
+            .get_edge_at(&u1, "follows", &u2, time_before_create)
+            .unwrap();
+        assert!(edge_before.is_none());
+
+        // Edge should exist after creation
+        let edge_after = graph
+            .get_edge_at(&u1, "follows", &u2, time_after_create)
+            .unwrap();
+        assert!(edge_after.is_some());
+        let edge = edge_after.unwrap();
+        assert_eq!(edge.created_at, time_created);
+        assert!(edge.deleted_at.is_none());
+    }
+
+    thread::sleep(Duration::from_millis(10));
+
+    // Soft delete the edge
+    {
+        let write_txn = cf.begin_write().unwrap();
+        let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
+        graph.remove_edge(&u1, "follows", &u2).unwrap();
+        drop(graph);
+        write_txn.commit().unwrap();
+    }
+
+    thread::sleep(Duration::from_millis(10));
+    let time_after_delete = current_timestamp_nanos();
+
+    // Verify temporal behavior after deletion
+    {
+        let read_txn = cf.begin_read().unwrap();
+        let graph = GraphTableRead::open(&read_txn, "edges").unwrap();
+
+        // Edge should not be returned by get_edge (filters deleted)
+        let edge = graph.get_edge(&u1, "follows", &u2).unwrap();
+        assert!(edge.is_none());
+
+        // Edge should still exist at time after creation but before deletion
+        let edge_during = graph
+            .get_edge_at(&u1, "follows", &u2, time_after_create)
+            .unwrap();
+        assert!(edge_during.is_some());
+
+        // Edge should not exist at time after deletion
+        let edge_after = graph
+            .get_edge_at(&u1, "follows", &u2, time_after_delete)
+            .unwrap();
+        assert!(edge_after.is_none());
+
+        // Verify edge can still be found with include_deleted iterator
+        let edges_with_deleted: Vec<Edge> = graph
+            .all_edges_with_deleted()
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(edges_with_deleted.len(), 1);
+        assert!(edges_with_deleted[0].deleted_at.is_some());
+
+        // Regular iterator should not return deleted edges
+        let edges: Vec<Edge> = graph.all_edges().unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(edges.len(), 0);
+    }
+}
+
+#[test]
+fn test_hard_delete_edge() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("graph.db");
+    let db = ColumnFamilyDatabase::open(&db_path).unwrap();
+    let cf = db.column_family_or_create("test").unwrap();
+
+    let u1 = Uuid::new_v4();
+    let u2 = Uuid::new_v4();
+
+    // Add edge
+    {
+        let write_txn = cf.begin_write().unwrap();
+        let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
+        graph
+            .add_edge(&u1, "follows", &u2, true, 1.0, None)
+            .unwrap();
+        drop(graph);
+        write_txn.commit().unwrap();
+    }
+
+    // Hard delete the edge
+    {
+        let write_txn = cf.begin_write().unwrap();
+        let mut graph = GraphTable::open(&write_txn, "edges").unwrap();
+        graph.hard_delete_edge(&u1, "follows", &u2).unwrap();
+        drop(graph);
+        write_txn.commit().unwrap();
+    }
+
+    // Verify edge is completely gone
+    let read_txn = cf.begin_read().unwrap();
+    let graph = GraphTableRead::open(&read_txn, "edges").unwrap();
+
+    let edge = graph.get_edge(&u1, "follows", &u2).unwrap();
+    assert!(edge.is_none());
+
+    // Should not appear even in include_deleted iterator
+    let edges_with_deleted: Vec<Edge> = graph
+        .all_edges_with_deleted()
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(edges_with_deleted.len(), 0);
 }

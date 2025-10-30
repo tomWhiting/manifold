@@ -102,27 +102,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let write_txn = cf.begin_write()?;
         let mut graph = GraphTable::open(&write_txn, "links")?;
 
-        let now = manifold_graph::edge::current_timestamp_nanos();
         let links = vec![
             // Home page links to everything
-            (home.id, "links_to", about.id, true, 1.0, now),
-            (home.id, "links_to", blog.id, true, 1.0, now),
-            (home.id, "links_to", contact.id, true, 1.0, now),
+            (home.id, "links_to", about.id, true, 1.0),
+            (home.id, "links_to", blog.id, true, 1.0),
+            (home.id, "links_to", contact.id, true, 1.0),
             // About links back to home
-            (about.id, "links_to", home.id, true, 1.0, now),
+            (about.id, "links_to", home.id, true, 1.0),
             // Blog links to posts
-            (blog.id, "links_to", post1.id, true, 1.0, now),
-            (blog.id, "links_to", post2.id, true, 1.0, now),
-            (blog.id, "links_to", home.id, true, 1.0, now),
+            (blog.id, "links_to", post1.id, true, 1.0),
+            (blog.id, "links_to", post2.id, true, 1.0),
+            (blog.id, "links_to", home.id, true, 1.0),
             // Posts link to each other and blog
-            (post1.id, "links_to", post2.id, true, 1.0, now),
-            (post1.id, "links_to", blog.id, true, 1.0, now),
-            (post2.id, "links_to", post1.id, true, 1.0, now),
-            (post2.id, "links_to", blog.id, true, 1.0, now),
+            (post1.id, "links_to", post2.id, true, 1.0),
+            (post1.id, "links_to", blog.id, true, 1.0),
+            (post2.id, "links_to", post1.id, true, 1.0),
+            (post2.id, "links_to", blog.id, true, 1.0),
             // Contact links to home
-            (contact.id, "links_to", home.id, true, 1.0, now),
+            (contact.id, "links_to", home.id, true, 1.0),
             // External site links in
-            (external.id, "links_to", home.id, true, 1.0, now),
+            (external.id, "links_to", home.id, true, 1.0),
         ];
 
         let count = graph.add_edges_batch(&links, false)?;

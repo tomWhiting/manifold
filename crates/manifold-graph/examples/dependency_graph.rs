@@ -212,26 +212,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let write_txn = cf.begin_write()?;
         let mut graph = GraphTable::open(&write_txn, "deps")?;
 
+        let now = manifold_graph::edge::current_timestamp_nanos();
         let dependencies = vec![
             // my-app depends on everything
-            (app.id, "depends_on", web_framework.id, true, 1.0),
-            (app.id, "depends_on", database.id, true, 1.0),
-            (app.id, "depends_on", auth.id, true, 1.0),
-            (app.id, "depends_on", logger.id, true, 1.0),
-            (app.id, "depends_on", config.id, true, 1.0),
+            (app.id, "depends_on", web_framework.id, true, 1.0, now),
+            (app.id, "depends_on", database.id, true, 1.0, now),
+            (app.id, "depends_on", auth.id, true, 1.0, now),
+            (app.id, "depends_on", logger.id, true, 1.0, now),
+            (app.id, "depends_on", config.id, true, 1.0, now),
             // web-framework depends on http and json
-            (web_framework.id, "depends_on", http.id, true, 1.0),
-            (web_framework.id, "depends_on", json.id, true, 1.0),
-            (web_framework.id, "depends_on", logger.id, true, 1.0),
+            (web_framework.id, "depends_on", http.id, true, 1.0, now),
+            (web_framework.id, "depends_on", json.id, true, 1.0, now),
+            (web_framework.id, "depends_on", logger.id, true, 1.0, now),
             // database depends on config and logger
-            (database.id, "depends_on", config.id, true, 1.0),
-            (database.id, "depends_on", logger.id, true, 1.0),
+            (database.id, "depends_on", config.id, true, 1.0, now),
+            (database.id, "depends_on", logger.id, true, 1.0, now),
             // auth depends on crypto, http, and json
-            (auth.id, "depends_on", crypto.id, true, 1.0),
-            (auth.id, "depends_on", http.id, true, 1.0),
-            (auth.id, "depends_on", json.id, true, 1.0),
+            (auth.id, "depends_on", crypto.id, true, 1.0, now),
+            (auth.id, "depends_on", http.id, true, 1.0, now),
+            (auth.id, "depends_on", json.id, true, 1.0, now),
             // http depends on logger
-            (http.id, "depends_on", logger.id, true, 1.0),
+            (http.id, "depends_on", logger.id, true, 1.0, now),
         ];
 
         let count = graph.add_edges_batch(&dependencies, false)?;

@@ -177,3 +177,76 @@ fn test_batch_insert() {
         write_txn.commit().unwrap();
     }
 }
+
+#[test]
+fn test_remove_vector() {
+    let tmpfile = NamedTempFile::new().unwrap();
+    let db = ColumnFamilyDatabase::open(tmpfile.path()).unwrap();
+    let cf = db.column_family_or_create("vectors").unwrap();
+
+    let id1 = Uuid::new_v4();
+    let id2 = Uuid::new_v4();
+
+    {
+        let write_txn = cf.begin_write().unwrap();
+        let mut table = VectorTable::<3>::open(&write_txn, "dense").unwrap();
+
+        table.insert(&id1, &[1.0, 2.0, 3.0]).unwrap();
+        table.insert(&id2, &[4.0, 5.0, 6.0]).unwrap();
+        assert_eq!(table.len().unwrap(), 2);
+
+        let removed = table.remove(&id1).unwrap();
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().value(), &[1.0, 2.0, 3.0]);
+        assert_eq!(table.len().unwrap(), 1);
+
+        let removed_none = table.remove(&Uuid::new_v4()).unwrap();
+        assert!(removed_none.is_none());
+        drop(removed_none);
+
+        drop(table);
+        write_txn.commit().unwrap();
+    }
+
+    let read_txn = cf.begin_read().unwrap();
+    let table = VectorTableRead::<3>::open(&read_txn, "dense").unwrap();
+    assert!(table.get(&id1).unwrap().is_none());
+    assert!(table.get(&id2).unwrap().is_some());
+}
+
+#[test]
+fn test_bulk_remove() {
+    let tmpfile = NamedTempFile::new().unwrap();
+    let db = ColumnFamilyDatabase::open(tmpfile.path()).unwrap();
+    let cf = db.column_family_or_create("vectors").unwrap();
+
+    let ids: Vec<Uuid> = (0..10).map(|_| Uuid::new_v4()).collect();
+
+    {
+        let write_txn = cf.begin_write().unwrap();
+        let mut table = VectorTable::<3>::open(&write_txn, "bulk").unwrap();
+
+        for id in &ids {
+            table.insert(id, &[1.0, 2.0, 3.0]).unwrap();
+        }
+        assert_eq!(table.len().unwrap(), 10);
+
+        let removed_count = table.remove_bulk(&ids[0..5]).unwrap();
+        assert_eq!(removed_count, 5);
+        assert_eq!(table.len().unwrap(), 5);
+
+        drop(table);
+        write_txn.commit().unwrap();
+    }
+
+    let read_txn = cf.begin_read().unwrap();
+    let table = VectorTableRead::<3>::open(&read_txn, "bulk").unwrap();
+
+    for id in &ids[0..5] {
+        assert!(table.get(id).unwrap().is_none());
+    }
+
+    for id in &ids[5..10] {
+        assert!(table.get(id).unwrap().is_some());
+    }
+}

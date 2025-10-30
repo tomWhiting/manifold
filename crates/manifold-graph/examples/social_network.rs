@@ -67,26 +67,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut graph = GraphTable::open(&write_txn, "connections")?;
 
         // Alice follows Bob and Charlie
-        graph.add_edge(&alice.id, "follows", &bob.id, true, 1.0)?;
-        graph.add_edge(&alice.id, "follows", &charlie.id, true, 0.8)?;
+        graph.add_edge(&alice.id, "follows", &bob.id, true, 1.0, None)?;
+        graph.add_edge(&alice.id, "follows", &charlie.id, true, 0.8, None)?;
 
         // Bob follows Alice and Diana
-        graph.add_edge(&bob.id, "follows", &alice.id, true, 1.0)?;
-        graph.add_edge(&bob.id, "follows", &diana.id, true, 0.9)?;
+        graph.add_edge(&bob.id, "follows", &alice.id, true, 1.0, None)?;
+        graph.add_edge(&bob.id, "follows", &diana.id, true, 0.9, None)?;
 
         // Charlie follows everyone except Eve
-        graph.add_edge(&charlie.id, "follows", &alice.id, true, 0.7)?;
-        graph.add_edge(&charlie.id, "follows", &bob.id, true, 0.6)?;
-        graph.add_edge(&charlie.id, "follows", &diana.id, true, 0.5)?;
+        graph.add_edge(&charlie.id, "follows", &alice.id, true, 0.7, None)?;
+        graph.add_edge(&charlie.id, "follows", &bob.id, true, 0.6, None)?;
+        graph.add_edge(&charlie.id, "follows", &diana.id, true, 0.5, None)?;
 
         // Diana follows Alice
-        graph.add_edge(&diana.id, "follows", &alice.id, true, 0.9)?;
+        graph.add_edge(&diana.id, "follows", &alice.id, true, 0.9, None)?;
 
         // Alice blocks Eve (active=false indicates blocked)
-        graph.add_edge(&alice.id, "blocks", &eve.id, true, 1.0)?;
+        graph.add_edge(&alice.id, "blocks", &eve.id, true, 1.0, None)?;
 
         // Bob mutes Charlie
-        graph.add_edge(&bob.id, "mutes", &charlie.id, true, 1.0)?;
+        graph.add_edge(&bob.id, "mutes", &charlie.id, true, 1.0, None)?;
 
         drop(graph);
         write_txn.commit()?;

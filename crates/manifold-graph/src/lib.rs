@@ -9,7 +9,7 @@
 //!
 //! - **Automatic bidirectional indexes**: Efficient queries for both outgoing and incoming edges
 //! - **UUID-based vertices**: Fixed-width 16-byte vertex IDs with proper ordering
-//! - **Type-safe edge properties**: Fixed-width `(bool, f32)` tuple for `is_active` and `weight`
+//! - **Type-safe edge properties**: Fixed-width tuple `(bool, f32, u64, Option<u64>)` for `is_active`, `weight`, and temporal tracking
 //! - **Atomic updates**: Both forward and reverse indexes updated in same transaction
 //! - **Efficient traversal**: Range scans leverage tuple key ordering for fast queries
 //!
@@ -31,7 +31,7 @@
 //! {
 //!     let write_txn = cf.begin_write()?;
 //!     let mut graph = GraphTable::open(&write_txn, "edges")?;
-//!     graph.add_edge(&user1, "follows", &user2, true, 1.0)?;
+//!     graph.add_edge(&user1, "follows", &user2, true, 1.0, None)?;
 //!     drop(graph);
 //!     write_txn.commit()?;
 //! }
@@ -64,12 +64,14 @@
 //!
 //! ## Edge Properties
 //!
-//! Edges store two fixed-width properties:
+//! Edges store fixed-width properties with temporal tracking:
 //! - `is_active: bool` - For active/passive edges, soft deletes, hidden edges
 //! - `weight: f32` - General-purpose edge weight or score
+//! - `created_at: u64` - Creation timestamp in nanoseconds since Unix epoch
+//! - `deleted_at: Option<u64>` - Deletion timestamp (None if not deleted)
 //!
-//! These properties are stored as a fixed-width tuple `(bool, f32)` for zero-overhead
-//! serialization (5 bytes total).
+//! These properties are stored as a fixed-width tuple `(bool, f32, u64, Option<u64>)` for
+//! efficient serialization (21 bytes total).
 
 #![deny(missing_docs)]
 #![deny(clippy::all, clippy::pedantic)]

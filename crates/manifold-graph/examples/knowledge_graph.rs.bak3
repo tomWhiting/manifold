@@ -141,7 +141,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut graph = GraphTable::open(&write_txn, "knowledge")?;
 
         #[allow(clippy::vec_init_then_push)]
-        let now = manifold_graph::edge::current_timestamp_nanos();
         let relationships = {
             let mut relationships = vec![];
 
