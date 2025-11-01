@@ -1,0 +1,26 @@
+[package]
+name = "manifold-properties"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Type-safe property storage optimizations for Manifold embedded database"
+keywords = ["database", "properties", "typed-storage", "zero-copy"]
+categories = ["database-implementations", "data-structures"]
+
+[dependencies]
+manifold = { path = "../..", version = "3.1", features = ["uuid"] }
+uuid = { version = "1.18.1", features = ["v4", "v7"] }
+
+[dev-dependencies]
+tempfile = "3.5.0"
+rand = "0.9"
+anyhow = "1.0.100"
+
+[lints.clippy]
+big_endian_bytes = "deny"
+dbg_macro = "deny"
+host_endian_bytes = "deny"
