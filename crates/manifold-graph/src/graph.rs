@@ -15,8 +15,8 @@ use uuid::Uuid;
 ///
 /// Value tuple: (is_active, weight, created_at, deleted_at)
 pub struct GraphTable<'txn> {
-    forward: Table<'txn, (Uuid, &'static str, Uuid), (bool, f32, u64, Option<u64>)>,
-    reverse: Table<'txn, (Uuid, &'static str, Uuid), (bool, f32, u64, Option<u64>)>,
+    forward: Table<'txn, (Uuid, &'static str, Uuid), (bool, f32, u64, u64)>,
+    reverse: Table<'txn, (Uuid, &'static str, Uuid), (bool, f32, u64, u64)>,
 }
 
 impl<'txn> GraphTable<'txn> {
@@ -27,9 +27,9 @@ impl<'txn> GraphTable<'txn> {
         let forward_name = format!("{name}_forward");
         let reverse_name = format!("{name}_reverse");
 
-        let forward_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32, u64, Option<u64>)> =
+        let forward_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32, u64, u64)> =
             TableDefinition::new(&forward_name);
-        let reverse_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32, u64, Option<u64>)> =
+        let reverse_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32, u64, u64)> =
             TableDefinition::new(&reverse_name);
 
         let forward = txn.open_table(forward_def)?;
@@ -60,7 +60,7 @@ impl<'txn> GraphTable<'txn> {
         created_at: Option<u64>,
     ) -> Result<(), TableError> {
         let timestamp = created_at.unwrap_or_else(current_timestamp_nanos);
-        let properties = (is_active, weight, timestamp, None);
+        let properties = (is_active, weight, timestamp, 0);
 
         // Insert into forward table: (source, edge_type, target) -> properties
         self.forward
@@ -93,7 +93,7 @@ impl<'txn> GraphTable<'txn> {
         };
 
         if let Some((is_active, weight, created_at)) = edge_data {
-            let deleted_at = Some(current_timestamp_nanos());
+            let deleted_at = current_timestamp_nanos();
             let properties = (is_active, weight, created_at, deleted_at);
 
             // Update forward table with deleted_at
@@ -202,23 +202,23 @@ impl<'txn> GraphTable<'txn> {
         sorted: bool,
     ) -> Result<usize, StorageError> {
         // Prepare forward table items: (source, edge_type, target) -> (is_active, weight, created_at, deleted_at)
-        let forward_items: Vec<((Uuid, &str, Uuid), (bool, f32, u64, Option<u64>))> = edges
+        let forward_items: Vec<((Uuid, &str, Uuid), (bool, f32, u64, u64))> = edges
             .iter()
             .map(|(source, edge_type, target, is_active, weight, created_at)| {
                 (
                     (*source, *edge_type, *target),
-                    (*is_active, *weight, *created_at, None),
+                    (*is_active, *weight, *created_at, 0),
                 )
             })
             .collect();
 
         // Prepare reverse table items: (target, edge_type, source) -> (is_active, weight, created_at, deleted_at)
-        let reverse_items: Vec<((Uuid, &str, Uuid), (bool, f32, u64, Option<u64>))> = edges
+        let reverse_items: Vec<((Uuid, &str, Uuid), (bool, f32, u64, u64))> = edges
             .iter()
             .map(|(source, edge_type, target, is_active, weight, created_at)| {
                 (
                     (*target, *edge_type, *source),
-                    (*is_active, *weight, *created_at, None),
+                    (*is_active, *weight, *created_at, 0),
                 )
             })
             .collect();
@@ -245,8 +245,8 @@ impl<'txn> GraphTable<'txn> {
 
 /// Read-only graph table providing efficient edge traversal with temporal support.
 pub struct GraphTableRead {
-    forward: ReadOnlyTable<(Uuid, &'static str, Uuid), (bool, f32, u64, Option<u64>)>,
-    reverse: ReadOnlyTable<(Uuid, &'static str, Uuid), (bool, f32, u64, Option<u64>)>,
+    forward: ReadOnlyTable<(Uuid, &'static str, Uuid), (bool, f32, u64, u64)>,
+    reverse: ReadOnlyTable<(Uuid, &'static str, Uuid), (bool, f32, u64, u64)>,
 }
 
 impl GraphTableRead {
@@ -255,9 +255,9 @@ impl GraphTableRead {
         let forward_name = format!("{name}_forward");
         let reverse_name = format!("{name}_reverse");
 
-        let forward_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32, u64, Option<u64>)> =
+        let forward_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32, u64, u64)> =
             TableDefinition::new(&forward_name);
-        let reverse_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32, u64, Option<u64>)> =
+        let reverse_def: TableDefinition<(Uuid, &str, Uuid), (bool, f32, u64, u64)> =
             TableDefinition::new(&reverse_name);
 
         let forward = txn.open_table(forward_def).map_err(|e| match e {
@@ -289,7 +289,7 @@ impl GraphTableRead {
             .and_then(|guard| {
                 let (is_active, weight, created_at, deleted_at) = guard.value();
                 // Only return if not deleted
-                if deleted_at.is_none() {
+                if deleted_at == 0 {
                     Some(Edge::with_timestamps(
                         *source,
                         edge_type,
@@ -428,7 +428,7 @@ impl GraphTableRead {
 ///
 /// By default, only returns non-deleted edges. Use all_edges_with_deleted() to include soft-deleted edges.
 pub struct OutgoingEdgeIter<'a> {
-    inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32, u64, Option<u64>)>,
+    inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32, u64, u64)>,
     include_deleted: bool,
 }
 
@@ -445,7 +445,7 @@ impl Iterator for OutgoingEdgeIter<'_> {
                     let (is_active, weight, created_at, deleted_at) = value_guard.value();
 
                     // Skip deleted edges unless include_deleted is true
-                    if !self.include_deleted && deleted_at.is_some() {
+                    if !self.include_deleted && deleted_at != 0 {
                         continue;
                     }
 
@@ -469,7 +469,7 @@ impl Iterator for OutgoingEdgeIter<'_> {
 ///
 /// By default, only returns non-deleted edges.
 pub struct AllEdgesIter<'a> {
-    inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32, u64, Option<u64>)>,
+    inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32, u64, u64)>,
     include_deleted: bool,
 }
 
@@ -486,7 +486,7 @@ impl Iterator for AllEdgesIter<'_> {
                     let (is_active, weight, created_at, deleted_at) = value_guard.value();
 
                     // Skip deleted edges unless include_deleted is true
-                    if !self.include_deleted && deleted_at.is_some() {
+                    if !self.include_deleted && deleted_at != 0 {
                         continue;
                     }
 
@@ -510,7 +510,7 @@ impl Iterator for AllEdgesIter<'_> {
 ///
 /// By default, only returns non-deleted edges.
 pub struct IncomingEdgeIter<'a> {
-    inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32, u64, Option<u64>)>,
+    inner: manifold::Range<'a, (Uuid, &'static str, Uuid), (bool, f32, u64, u64)>,
     include_deleted: bool,
 }
 
@@ -527,7 +527,7 @@ impl Iterator for IncomingEdgeIter<'_> {
                     let (is_active, weight, created_at, deleted_at) = value_guard.value();
 
                     // Skip deleted edges unless include_deleted is true
-                    if !self.include_deleted && deleted_at.is_some() {
+                    if !self.include_deleted && deleted_at != 0 {
                         continue;
                     }
 

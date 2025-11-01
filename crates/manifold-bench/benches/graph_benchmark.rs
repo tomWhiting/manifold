@@ -61,12 +61,13 @@ fn print_result(name: &str, duration: Duration, ops: usize) {
 }
 
 /// Generate a batch of random edges for testing
-fn generate_edges(count: usize, num_vertices: usize) -> Vec<(Uuid, &'static str, Uuid, bool, f32)> {
+fn generate_edges(count: usize, num_vertices: usize) -> Vec<(Uuid, &'static str, Uuid, bool, f32, u64)> {
     let vertices: Vec<Uuid> = (0..num_vertices).map(|_| Uuid::new_v4()).collect();
     let mut edges = Vec::with_capacity(count);
     let mut rng = 12345u64;
+    let base_timestamp = 1000000000u64;
 
-    for _ in 0..count {
+    for i in 0..count {
         rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
         let source_idx = (rng as usize) % num_vertices;
 
@@ -83,6 +84,7 @@ fn generate_edges(count: usize, num_vertices: usize) -> Vec<(Uuid, &'static str,
 
         let is_active = true;
         let weight = (rng % 100) as f32 / 100.0;
+        let timestamp = base_timestamp + (i as u64);
 
         edges.push((
             vertices[source_idx],
@@ -90,6 +92,7 @@ fn generate_edges(count: usize, num_vertices: usize) -> Vec<(Uuid, &'static str,
             vertices[target_idx],
             is_active,
             weight,
+            timestamp,
         ));
     }
 
@@ -110,9 +113,9 @@ fn benchmark_individual_inserts(num_edges: usize) -> Duration {
     {
         let mut graph = GraphTable::open(&txn, "social").unwrap();
 
-        for (source, edge_type, target, is_active, weight) in &edges {
+        for (source, edge_type, target, is_active, weight, timestamp) in &edges {
             graph
-                .add_edge(source, edge_type, target, *is_active, *weight)
+                .add_edge(source, edge_type, target, *is_active, *weight, Some(*timestamp))
                 .unwrap();
         }
     }
@@ -171,7 +174,7 @@ fn benchmark_outgoing_traversal(num_vertices: usize, edges_per_vertex: usize) ->
                 for i in 0..edges_per_vertex {
                     let target = Uuid::new_v4();
                     graph
-                        .add_edge(source, "follows", &target, true, i as f32)
+                        .add_edge(source, "follows", &target, true, i as f32, None)
                         .unwrap();
                 }
             }
@@ -226,7 +229,7 @@ fn benchmark_incoming_traversal(num_vertices: usize, edges_per_vertex: usize) ->
                 for i in 0..edges_per_vertex {
                     let source = Uuid::new_v4();
                     graph
-                        .add_edge(&source, "follows", target, true, i as f32)
+                        .add_edge(&source, "follows", target, true, i as f32, None)
                         .unwrap();
                 }
             }
@@ -320,9 +323,9 @@ fn benchmark_edge_updates(num_edges: usize) -> Duration {
         let txn = cf.begin_write().unwrap();
         {
             let mut graph = GraphTable::open(&txn, "social").unwrap();
-            for (source, edge_type, target, is_active, weight) in &edges {
+            for (source, edge_type, target, is_active, weight, timestamp) in &edges {
                 graph
-                    .add_edge(source, edge_type, target, *is_active, *weight)
+                    .add_edge(source, edge_type, target, *is_active, *weight, Some(*timestamp))
                     .unwrap();
             }
         }
@@ -336,7 +339,7 @@ fn benchmark_edge_updates(num_edges: usize) -> Duration {
     {
         let mut graph = GraphTable::open(&txn, "social").unwrap();
 
-        for (source, edge_type, target, _, weight) in &edges {
+        for (source, edge_type, target, _, weight, _) in &edges {
             graph
                 .update_edge(source, edge_type, target, false, weight + 0.1)
                 .unwrap();
@@ -366,9 +369,9 @@ fn benchmark_edge_deletions(num_edges: usize) -> Duration {
         let txn = cf.begin_write().unwrap();
         {
             let mut graph = GraphTable::open(&txn, "social").unwrap();
-            for (source, edge_type, target, is_active, weight) in &edges {
+            for (source, edge_type, target, is_active, weight, timestamp) in &edges {
                 graph
-                    .add_edge(source, edge_type, target, *is_active, *weight)
+                    .add_edge(source, edge_type, target, *is_active, *weight, Some(*timestamp))
                     .unwrap();
             }
         }
@@ -382,7 +385,7 @@ fn benchmark_edge_deletions(num_edges: usize) -> Duration {
     {
         let mut graph = GraphTable::open(&txn, "social").unwrap();
 
-        for (source, edge_type, target, _, _) in &edges {
+        for (source, edge_type, target, _, _, _) in &edges {
             graph.remove_edge(source, edge_type, target).unwrap();
         }
     }
@@ -434,9 +437,9 @@ fn benchmark_sustained_inserts(
                 {
                     let mut graph = GraphTable::open(&txn, "social").unwrap();
 
-                    for (source, edge_type, target, is_active, weight) in &edges {
+                    for (source, edge_type, target, is_active, weight, timestamp) in &edges {
                         graph
-                            .add_edge(source, edge_type, target, *is_active, *weight)
+                            .add_edge(source, edge_type, target, *is_active, *weight, Some(*timestamp))
                             .unwrap();
                     }
                 }
@@ -534,9 +537,9 @@ fn benchmark_mixed_workload(
                     {
                         let mut graph = GraphTable::open(&txn, "social").unwrap();
 
-                        for (source, edge_type, target, is_active, weight) in &edges {
+                        for (source, edge_type, target, is_active, weight, timestamp) in &edges {
                             graph
-                                .add_edge(source, edge_type, target, *is_active, *weight)
+                                .add_edge(source, edge_type, target, *is_active, *weight, Some(*timestamp))
                                 .unwrap();
                         }
                     }

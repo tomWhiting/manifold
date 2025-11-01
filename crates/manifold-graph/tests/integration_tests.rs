@@ -565,7 +565,7 @@ fn test_temporal_edge_lifecycle() {
         assert!(edge_after.is_some());
         let edge = edge_after.unwrap();
         assert_eq!(edge.created_at, time_created);
-        assert!(edge.deleted_at.is_none());
+        assert_eq!(edge.deleted_at, 0);
     }
 
     thread::sleep(Duration::from_millis(10));
@@ -610,7 +610,7 @@ fn test_temporal_edge_lifecycle() {
             .map(|r| r.unwrap())
             .collect();
         assert_eq!(edges_with_deleted.len(), 1);
-        assert!(edges_with_deleted[0].deleted_at.is_some());
+        assert!(edges_with_deleted[0].deleted_at != 0);
 
         // Regular iterator should not return deleted edges
         let edges: Vec<Edge> = graph.all_edges().unwrap().map(|r| r.unwrap()).collect();

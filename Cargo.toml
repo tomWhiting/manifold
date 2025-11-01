@@ -19,7 +19,7 @@ members = [
     "crates/manifold-python",
     "crates/manifold-vectors",
     "crates/manifold-graph",
-    "crates/manifold-timeseries",
+    "crates/manifold-timeseries", "crates/manifold-properties",
 ]
 default-members = [".", "crates/manifold-derive"]
 

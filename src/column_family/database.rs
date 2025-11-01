@@ -1103,6 +1103,26 @@ impl ColumnFamily {
         db.begin_read()
     }
 
+    /// Releases this column family's file handle back to the pool.
+    ///
+    /// After calling this, the next operation on this column family will
+    /// re-acquire a file handle from the pool. This is useful for explicitly
+    /// managing file descriptor usage in scenarios with many column families.
+    ///
+    /// This is automatically called by LRU eviction, but can be called manually
+    /// for explicit control (e.g., in tests or after bulk operations).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn release_handle(&self) {
+        self.pool.release(&self.name);
+        self.state.evict_database();
+    }
+
+    /// WASM version - no-op since WASM doesn't have file handle pooling
+    #[cfg(target_arch = "wasm32")]
+    pub fn release_handle(&self) {
+        self.state.evict_database();
+    }
+
     /// Ensures the Database instance exists, creating it if necessary (native platforms).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn ensure_database(&self) -> Result<Arc<Database>, DatabaseError> {

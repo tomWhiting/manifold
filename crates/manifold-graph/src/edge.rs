@@ -17,8 +17,8 @@ pub struct Edge {
     pub weight: f32,
     /// Creation timestamp in nanoseconds since Unix epoch
     pub created_at: u64,
-    /// Deletion timestamp in nanoseconds since Unix epoch (None if not deleted)
-    pub deleted_at: Option<u64>,
+    /// Deletion timestamp in nanoseconds since Unix epoch (0 if not deleted)
+    pub deleted_at: u64,
 }
 
 impl Edge {
@@ -37,7 +37,7 @@ impl Edge {
             is_active,
             weight,
             created_at: current_timestamp_nanos(),
-            deleted_at: None,
+            deleted_at: 0,
         }
     }
 
@@ -49,7 +49,7 @@ impl Edge {
         is_active: bool,
         weight: f32,
         created_at: u64,
-        deleted_at: Option<u64>,
+        deleted_at: u64,
     ) -> Self {
         Self {
             source,
@@ -64,8 +64,7 @@ impl Edge {
 
     /// Checks if this edge was active at the given timestamp
     pub fn is_active_at(&self, timestamp: u64) -> bool {
-        self.created_at <= timestamp
-            && self.deleted_at.map_or(true, |deleted| deleted > timestamp)
+        self.created_at <= timestamp && (self.deleted_at == 0 || self.deleted_at > timestamp)
     }
 }
 
