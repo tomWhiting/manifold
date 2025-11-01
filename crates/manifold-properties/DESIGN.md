@@ -10,6 +10,100 @@ Create a native Manifold property storage crate that eliminates string-based ser
 
 ---
 
+## Manifold and Hyperspatial Architecture
+
+### The Relationship
+
+**Manifold** is a fork of redb - an embedded database designed specifically for Hyperspatial's needs:
+- **Column families:** Multiple isolated storage contexts in one database file
+- **Write-ahead log (WAL):** Crash recovery and durability
+- **MVCC:** Multi-version concurrency control for consistent reads
+
+**Hyperspatial** is built on top of Manifold and uses its domain crates:
+- **manifold-vectors:** Fixed-width vector storage for embeddings (zero-copy)
+- **manifold-graph:** Bidirectional edge indexes for graph traversal
+- **manifold-timeseries:** Temporal data with automatic aggregation
+- **manifold-properties (this crate):** Type-safe property storage
+
+### The Stack
+
+```
+┌─────────────────────────────────────────────┐
+│         Hyperspatial Application            │
+│  (Multi-paradigm database with hyperbolic   │
+│   geometry, cascades, streams, triggers)    │
+└─────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────┐
+│      Manifold Domain Crates (this layer)    │
+│  - manifold-vectors (embeddings)            │
+│  - manifold-graph (edges)                   │
+│  - manifold-timeseries (temporal)           │
+│  - manifold-properties (this crate)         │
+└─────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────┐
+│         Manifold Core Database              │
+│  (Column families, WAL, MVCC, B-trees)      │
+└─────────────────────────────────────────────┘
+```
+
+### Why Domain Crates Matter
+
+Each domain crate provides **specialized storage optimizations** for a specific data type:
+
+**manifold-vectors:**
+- Fixed-width `[f32; 768]` arrays
+- Zero-copy via memory mapping
+- 10x faster than generic serialization
+
+**manifold-graph:**
+- Native Edge struct with bidirectional indexes
+- Forward and reverse lookups in O(log N)
+- No separate reverse index table needed
+
+**manifold-timeseries:**
+- u64 timestamp-based encoding
+- Automatic rollup aggregations
+- Efficient temporal range queries
+
+**manifold-properties (this crate):**
+- Native type variants (Integer, Float, Boolean)
+- Eliminates string parsing overhead
+- Zero-copy for numeric types
+
+### Integration Pattern
+
+Hyperspatial's storage layer uses these domain crates through a Router abstraction:
+
+```
+Hyperspatial Router
+  └─> ManifoldCollection (one .manifold file)
+       ├─> PropertyTable (manifold-properties) ← THIS CRATE
+       ├─> VectorTable (manifold-vectors)
+       ├─> GraphTable (manifold-graph)
+       └─> TimeSeriesTable (manifold-timeseries)
+```
+
+All domain crates share the same ColumnFamilyDatabase instance, enabling:
+- Single file for all data types
+- Transactional consistency across data types
+- Efficient column family isolation
+- Shared WAL for durability
+
+### Why This Crate Is Critical
+
+Properties are accessed in **every Hyperspatial operation:**
+- **Queries:** WHERE clauses filter on properties
+- **Cascades:** Aggregate numeric properties from source entities
+- **Schemas:** Validate property types and constraints
+- **Filters:** Stream processors filter events by properties
+- **Similarities:** Property comparisons in hyperbolic space
+
+Getting 3-8x faster property access affects **overall system performance**, not just one operation.
+
+---
+
 ## Why We're Doing This
 
 ### Current Approach (Inefficient)
