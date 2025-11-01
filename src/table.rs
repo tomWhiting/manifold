@@ -1,9 +1,9 @@
 use crate::db::TransactionGuard;
 use crate::sealed::Sealed;
 use crate::tree_store::{
-    AccessGuardMutInPlace, Btree, BtreeExtractIf, BtreeHeader, BtreeMut, BtreeRangeIter, PageHint,
-    PageNumber, PageTrackerPolicy, RawBtree, TransactionalMemory, MAX_PAIR_LENGTH,
-    MAX_VALUE_LENGTH,
+    AccessGuardMutInPlace, Btree, BtreeExtractIf, BtreeHeader, BtreeMut, BtreeRangeIter,
+    MAX_PAIR_LENGTH, MAX_VALUE_LENGTH, PageHint, PageNumber, PageTrackerPolicy, RawBtree,
+    TransactionalMemory,
 };
 use crate::types::{Key, MutInPlaceValue, Value};
 use crate::{AccessGuard, AccessGuardMut, StorageError, WriteTransaction};
@@ -573,6 +573,72 @@ pub trait ReadableTable<K: Key + 'static, V: Value + 'static>: ReadableTableMeta
     /// Returns the value corresponding to the given key
     fn get<'a>(&self, key: impl Borrow<K::SelfType<'a>>) -> Result<Option<AccessGuard<'_, V>>>;
 
+    /// Retrieves multiple values in a single batch operation.
+    ///
+    /// This method provides better performance than calling `get()` multiple times by:
+    /// - Optimizing B-tree traversal order (sorts keys internally)
+    /// - Reducing repeated lookups for nearby keys
+    /// - Better cache locality
+    ///
+    /// # Arguments
+    ///
+    /// * `keys` - Iterator of keys to retrieve
+    ///
+    /// # Returns
+    ///
+    /// A vector of Option<AccessGuard> in the same order as the input keys.
+    /// Missing keys will be None.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use manifold::{Database, TableDefinition, Error};
+    /// # const TABLE: TableDefinition<u64, &str> = TableDefinition::new("data");
+    /// # fn example() -> Result<(), Error> {
+    /// # let db = Database::create("example.db")?;
+    /// # let txn = db.begin_read()?;
+    /// # let table = txn.open_table(TABLE)?;
+    /// let keys = vec![1u64, 2u64, 3u64];
+    /// let values = table.get_bulk(keys.iter().copied())?;
+    /// for (i, value) in values.iter().enumerate() {
+    ///     if let Some(guard) = value {
+    ///         println!("Key {}: {:?}", keys[i], guard.value());
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn get_bulk<'i, I>(&self, keys: I) -> Result<Vec<Option<AccessGuard<'_, V>>>>
+    where
+        I: IntoIterator<Item = K::SelfType<'i>>,
+    {
+        // Default implementation: collect keys with indices, sort, retrieve, restore order
+        let mut indexed_keys: Vec<(usize, Vec<u8>)> = keys
+            .into_iter()
+            .enumerate()
+            .map(|(idx, key)| (idx, K::as_bytes(&key).as_ref().to_vec()))
+            .collect();
+
+        // Sort by key bytes for sequential B-tree access
+        indexed_keys.sort_by(|a, b| a.1.cmp(&b.1));
+
+        // Retrieve values in sorted order
+        let mut sorted_results: Vec<(usize, Option<AccessGuard<'_, V>>)> =
+            Vec::with_capacity(indexed_keys.len());
+
+        for (original_idx, key_bytes) in indexed_keys {
+            let key = K::from_bytes(&key_bytes);
+            let value = self.get(&key)?;
+            sorted_results.push((original_idx, value));
+        }
+
+        // Restore original order
+        sorted_results.sort_by_key(|(idx, _)| *idx);
+
+        // Extract just the values
+        Ok(sorted_results.into_iter().map(|(_, v)| v).collect())
+    }
+
     /// Returns a double-ended iterator over a range of elements in the table
     ///
     /// # Examples
@@ -773,11 +839,11 @@ pub struct ExtractIf<
 }
 
 impl<
-        'a,
-        K: Key + 'static,
-        V: Value + 'static,
-        F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
-    > ExtractIf<'a, K, V, F>
+    'a,
+    K: Key + 'static,
+    V: Value + 'static,
+    F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
+> ExtractIf<'a, K, V, F>
 {
     pub(crate) fn new(inner: BtreeExtractIf<'a, K, V, F>) -> Self {
         Self { inner }
@@ -785,11 +851,11 @@ impl<
 }
 
 impl<
-        'a,
-        K: Key + 'static,
-        V: Value + 'static,
-        F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
-    > Iterator for ExtractIf<'a, K, V, F>
+    'a,
+    K: Key + 'static,
+    V: Value + 'static,
+    F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
+> Iterator for ExtractIf<'a, K, V, F>
 {
     type Item = Result<(AccessGuard<'a, K>, AccessGuard<'a, V>)>;
 
@@ -805,10 +871,10 @@ impl<
 }
 
 impl<
-        K: Key + 'static,
-        V: Value + 'static,
-        F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
-    > DoubleEndedIterator for ExtractIf<'_, K, V, F>
+    K: Key + 'static,
+    V: Value + 'static,
+    F: for<'f> FnMut(K::SelfType<'f>, V::SelfType<'f>) -> bool,
+> DoubleEndedIterator for ExtractIf<'_, K, V, F>
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let entry = self.inner.next_back()?;

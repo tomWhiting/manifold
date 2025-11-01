@@ -13,6 +13,7 @@ categories = ["database-implementations", "data-structures"]
 
 [dependencies]
 manifold = { path = "../..", version = "3.1", features = ["uuid"] }
+serde = { version = "1.0.228", features = ["derive"] }
 uuid = { version = "1.18.1", features = ["v4", "v7"] }
 
 [dev-dependencies]
