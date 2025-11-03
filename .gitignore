@@ -30,3 +30,13 @@ flamegraph.svg
 
 # OS
 .DS_Store
+
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
+secrets.json
