@@ -12,7 +12,7 @@ keywords = ["database", "graph", "edges", "vertices", "network"]
 categories = ["database-implementations", "data-structures"]
 
 [dependencies]
-manifold = { path = "../..", version = "3.1", features = ["uuid"] }
+manifold = { path = "../..", version = "3.1", features = ["uuid"], package = "manifold-db" }
 uuid = "1.17.0"
 
 [dev-dependencies]

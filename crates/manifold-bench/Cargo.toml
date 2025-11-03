@@ -11,7 +11,7 @@ authors.workspace = true
 
 # Common test/bench dependencies
 [dev-dependencies]
-manifold = { path = "../.." }
+manifold = { path = "../..", package = "manifold-db" }
 manifold-vectors = { path = "../manifold-vectors" }
 manifold-graph = { path = "../manifold-graph" }
 manifold-timeseries = { path = "../manifold-timeseries" }

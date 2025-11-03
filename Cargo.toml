@@ -1,5 +1,5 @@
 [package]
-name = "manifold"
+name = "manifold-db"
 description = "Manifold Embedded Database"
 readme = "README.md"
 version = "3.1.0"
@@ -32,6 +32,7 @@ homepage = "https://github.com/tomWhiting/manifold"
 repository = "https://github.com/tomWhiting/manifold"
 
 [lib]
+name = "manifold"  # Keep as "manifold" so users can `use manifold::...`
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

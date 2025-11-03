@@ -12,7 +12,7 @@ keywords = ["database", "timeseries", "metrics", "monitoring", "downsampling"]
 categories = ["database-implementations", "data-structures"]
 
 [dependencies]
-manifold = { path = "../..", version = "3.1" }
+manifold = { path = "../..", version = "3.1", package = "manifold-db" }
 
 [dev-dependencies]
 tempfile = "3.5.0"
